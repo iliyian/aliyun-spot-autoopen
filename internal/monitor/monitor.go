@@ -7,7 +7,6 @@ import (
 
 	"github.com/iliyian/aliyun-spot-autoopen/internal/aliyun"
 	"github.com/iliyian/aliyun-spot-autoopen/internal/config"
-	"github.com/iliyian/aliyun-spot-autoopen/internal/health"
 	"github.com/iliyian/aliyun-spot-autoopen/internal/notify"
 	log "github.com/sirupsen/logrus"
 )
@@ -17,7 +16,6 @@ type Monitor struct {
 	cfg       *config.Config
 	ecsClient *aliyun.ECSClient
 	notifier  *notify.TelegramNotifier
-	pinger    *health.PingChecker
 
 	// Tracked instances
 	instances []*aliyun.SpotInstance
@@ -33,7 +31,6 @@ func New(cfg *config.Config) (*Monitor, error) {
 	m := &Monitor{
 		cfg:        cfg,
 		ecsClient:  aliyun.NewECSClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret),
-		pinger:     health.NewPingChecker(),
 		lastNotify: make(map[string]time.Time),
 	}
 
@@ -137,38 +134,19 @@ func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
 
 		log.Infof("Start command sent for instance %s", inst.InstanceID)
 
-		// Wait for instance to be running
+		// Wait for instance to be running (using Aliyun API)
 		if err := m.waitForRunning(inst.RegionID, inst.InstanceID); err != nil {
 			lastErr = err
 			log.Warnf("Instance %s did not reach running state: %v", inst.InstanceID, err)
 			continue
 		}
 
-		// Health check if enabled
-		if m.cfg.HealthCheckEnabled {
-			// Get updated instance info for IP
-			updatedInst, err := m.ecsClient.GetInstance(inst.RegionID, inst.InstanceID)
-			if err != nil {
-				log.Warnf("Failed to get updated instance info: %v", err)
-			} else {
-				inst = updatedInst
-			}
-
-			if inst.PublicIPAddress != "" {
-				log.Infof("Performing health check on %s (%s)", inst.InstanceID, inst.PublicIPAddress)
-				timeout := time.Duration(m.cfg.HealthCheckTimeout) * time.Second
-				interval := time.Duration(m.cfg.HealthCheckInterval) * time.Second
-
-				if err := m.pinger.WaitForHealth(inst.PublicIPAddress, timeout, interval); err != nil {
-					log.Warnf("Health check failed for instance %s: %v", inst.InstanceID, err)
-					if m.notifier != nil {
-						m.notifier.NotifyHealthCheckTimeout(inst.InstanceID, inst.InstanceName, inst.RegionID, inst.PublicIPAddress, m.cfg.HealthCheckTimeout)
-					}
-					return nil // Instance started but health check failed
-				}
-			} else {
-				log.Warnf("Instance %s has no public IP, skipping health check", inst.InstanceID)
-			}
+		// Get updated instance info for IP
+		updatedInst, err := m.ecsClient.GetInstance(inst.RegionID, inst.InstanceID)
+		if err != nil {
+			log.Warnf("Failed to get updated instance info: %v", err)
+		} else {
+			inst = updatedInst
 		}
 
 		// Success!

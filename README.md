@@ -23,12 +23,17 @@ sudo systemctl enable aliyun-spot
 sudo journalctl -u aliyun-spot -f
 ```
 
+## 🗑️ 一键卸载
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot-autoopen/main/uninstall.sh)"
+```
+
 ## 功能特性
 
 - 🔍 **自动发现** - 自动扫描所有区域，找出所有抢占式实例
 - ⏰ **定时监控** - 每分钟检测实例状态（可配置）
 - 🚀 **自动启动** - 检测到 Stopped 状态自动启动，失败重试 3 次
-- 🏥 **健康检查** - 启动后通过 Ping 验证实例可用性
 - 📱 **Telegram 通知** - 实例回收、启动成功、启动失败都会通知
 - 🔇 **通知限流** - 同一实例 5 分钟内只通知一次，避免刷屏
 
@@ -182,9 +187,6 @@ docker run -d --name aliyun-spot \
 | `RETRY_COUNT` | ❌ | `3` | 启动失败重试次数 |
 | `RETRY_INTERVAL` | ❌ | `30` | 重试间隔（秒） |
 | `NOTIFY_COOLDOWN` | ❌ | `300` | 通知冷却时间（秒） |
-| `HEALTH_CHECK_ENABLED` | ❌ | `true` | 是否启用健康检查 |
-| `HEALTH_CHECK_TIMEOUT` | ❌ | `300` | 健康检查超时（秒） |
-| `HEALTH_CHECK_INTERVAL` | ❌ | `10` | 健康检查间隔（秒） |
 | `LOG_LEVEL` | ❌ | `info` | 日志级别 |
 | `LOG_FILE` | ❌ | - | 日志文件路径 |
 
@@ -204,15 +206,15 @@ ID: i-xxx123
 正在尝试自动启动...
 ```
 
-**实例已就绪：**
+**实例已启动：**
 ```
-✅ 实例已就绪
+✅ 实例已启动
 ━━━━━━━━━━━━━━━
 实例: web-server-1
 ID: i-xxx123
 区域: cn-hangzhou
 公网IP: 47.xxx.xxx.xxx
-健康检查: Ping ✓
+状态: Running ✓
 启动耗时: 45 秒
 ━━━━━━━━━━━━━━━
 ```
@@ -231,14 +233,6 @@ ID: i-xxx123
 ```
 
 ## 常见问题
-
-### Q: 健康检查失败怎么办？
-
-健康检查使用 ICMP Ping，需要：
-1. 实例有公网 IP
-2. 安全组允许 ICMP 入站
-
-如果不需要健康检查，可以设置 `HEALTH_CHECK_ENABLED=false`
 
 ### Q: 如何只监控特定区域？
 

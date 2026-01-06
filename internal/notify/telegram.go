@@ -98,13 +98,13 @@ func (t *TelegramNotifier) NotifyInstanceStarted(instanceID, instanceName, regio
 		ipInfo = publicIP
 	}
 
-	message := fmt.Sprintf(`✅ <b>实例已就绪</b>
+	message := fmt.Sprintf(`✅ <b>实例已启动</b>
 ━━━━━━━━━━━━━━━
 实例: %s
 ID: <code>%s</code>
 区域: %s
 公网IP: <code>%s</code>
-健康检查: Ping ✓
+状态: Running ✓
 启动耗时: %.0f 秒
 ━━━━━━━━━━━━━━━`,
 		instanceName, instanceID, region, ipInfo, duration.Seconds())
