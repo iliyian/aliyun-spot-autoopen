@@ -2,6 +2,27 @@
 
 阿里云抢占式实例自动检测和开机工具。自动监控所有区域的抢占式实例，当实例被回收（停止）时自动重新启动，并通过 Telegram 发送通知。
 
+## 🚀 一键安装
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot-autoopen/main/install.sh)"
+```
+
+安装完成后，编辑配置文件并启动服务：
+```bash
+# 编辑配置
+sudo vim /opt/aliyun-spot-autoopen/.env
+
+# 启动服务
+sudo systemctl start aliyun-spot
+
+# 设置开机自启
+sudo systemctl enable aliyun-spot
+
+# 查看日志
+sudo journalctl -u aliyun-spot -f
+```
+
 ## 功能特性
 
 - 🔍 **自动发现** - 自动扫描所有区域，找出所有抢占式实例
