@@ -33,22 +33,32 @@
 3. 按提示设置机器人名称
 4. 获取 Bot Token（格式：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`）
 
-**获取 Chat ID：**
-1. 搜索 [@userinfobot](https://t.me/userinfobot) 并发送任意消息
-2. 机器人会回复你的 Chat ID
+**获取 Chat ID（三种方法）：**
 
-或者使用群组：
-1. 将机器人添加到群组
-2. 在群组中发送任意消息
-3. 访问 `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`
-4. 在返回的 JSON 中找到 `chat.id`（群组 ID 为负数）
+**方法 1：使用 @userinfobot（推荐，最简单）**
+1. 在 Telegram 中搜索 `@userinfobot`
+2. 点击 Start 或发送任意消息
+3. 机器人会回复你的 Chat ID（Id: 后面的数字）
+
+**方法 2：使用 @getmyid_bot**
+1. 在 Telegram 中搜索 `@getmyid_bot`
+2. 点击 Start
+3. 机器人会回复 Your user ID
+
+**方法 3：通过 API 获取（适用于群组通知）**
+1. 先把你创建的 Bot 添加到目标群组
+2. 在群组中 @你的机器人 发送一条消息
+3. 在浏览器访问：
+   ```
+   https://api.telegram.org/bot<你的BOT_TOKEN>/getUpdates
+   ```
+4. 在返回的 JSON 中找到 `"chat":{"id":-123456789}`
+   - 个人聊天 ID 是正数（如 `815609952`）
+   - 群组 ID 是负数（如 `-123456789`）
 
 ### 3. 配置环境变量
 
 ```bash
-# 复制配置模板
-cp .env.example .env
-
 # 编辑配置
 vim .env
 ```

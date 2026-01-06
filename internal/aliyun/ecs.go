@@ -3,6 +3,8 @@ package aliyun
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
@@ -25,6 +27,7 @@ type ECSClient struct {
 	accessKeyID     string
 	accessKeySecret string
 	clients         map[string]*ecs.Client // region -> client
+	clientsMu       sync.RWMutex
 }
 
 // NewECSClient creates a new ECS client
@@ -38,6 +41,19 @@ func NewECSClient(accessKeyID, accessKeySecret string) *ECSClient {
 
 // getClient gets or creates an ECS client for the specified region
 func (c *ECSClient) getClient(regionID string) (*ecs.Client, error) {
+	// Try read lock first
+	c.clientsMu.RLock()
+	if client, ok := c.clients[regionID]; ok {
+		c.clientsMu.RUnlock()
+		return client, nil
+	}
+	c.clientsMu.RUnlock()
+
+	// Need to create client, use write lock
+	c.clientsMu.Lock()
+	defer c.clientsMu.Unlock()
+
+	// Double check after acquiring write lock
 	if client, ok := c.clients[regionID]; ok {
 		return client, nil
 	}
@@ -237,20 +253,57 @@ func (c *ECSClient) StartInstance(regionID, instanceID string) error {
 
 // DiscoverAllSpotInstances discovers all spot instances across all regions
 func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
+	log.Info("Fetching all regions...")
 	regions, err := c.GetAllRegions()
 	if err != nil {
 		return nil, err
 	}
+	log.Infof("Found %d regions, scanning for spot instances...", len(regions))
 
-	var allInstances []*SpotInstance
+	// Use concurrent scanning for faster discovery
+	var (
+		allInstances []*SpotInstance
+		mu           sync.Mutex
+		wg           sync.WaitGroup
+		semaphore    = make(chan struct{}, 10) // Limit concurrent requests
+	)
+
+	startTime := time.Now()
+	scannedCount := 0
+	var scannedMu sync.Mutex
+
 	for _, region := range regions {
-		instances, err := c.GetSpotInstances(region)
-		if err != nil {
-			log.Warnf("Failed to get spot instances in region %s: %v", region, err)
-			continue
-		}
-		allInstances = append(allInstances, instances...)
+		wg.Add(1)
+		go func(regionID string) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // Acquire
+			defer func() { <-semaphore }() // Release
+
+			instances, err := c.GetSpotInstances(regionID)
+
+			scannedMu.Lock()
+			scannedCount++
+			progress := scannedCount
+			scannedMu.Unlock()
+
+			if err != nil {
+				log.Debugf("[%d/%d] Region %s: error - %v", progress, len(regions), regionID, err)
+				return
+			}
+
+			if len(instances) > 0 {
+				mu.Lock()
+				allInstances = append(allInstances, instances...)
+				mu.Unlock()
+				log.Infof("[%d/%d] Region %s: found %d spot instance(s)", progress, len(regions), regionID, len(instances))
+			} else {
+				log.Debugf("[%d/%d] Region %s: no spot instances", progress, len(regions), regionID)
+			}
+		}(region)
 	}
+
+	wg.Wait()
+	log.Infof("Scan completed in %.1f seconds", time.Since(startTime).Seconds())
 
 	return allInstances, nil
 }
