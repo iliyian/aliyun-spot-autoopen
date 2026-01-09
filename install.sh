@@ -12,18 +12,117 @@ REPO="iliyian/aliyun-spot-autoopen"
 INSTALL_DIR="/opt/aliyun-spot-autoopen"
 SERVICE_NAME="aliyun-spot"
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Aliyun Spot Instance Auto-Start${NC}"
-echo -e "${GREEN}  自动安装脚本${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo
-
 # Check root
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}请使用 root 用户运行此脚本${NC}"
     echo "sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh)\""
     exit 1
 fi
+
+# Parse command line arguments
+ACTION="${1:-install}"
+
+# Upgrade function
+do_upgrade() {
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}  Aliyun Spot Instance Auto-Start${NC}"
+    echo -e "${GREEN}  自动升级脚本${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo
+
+    # Check if installed
+    if [ ! -f "$INSTALL_DIR/aliyun-spot-autoopen" ]; then
+        echo -e "${RED}程序未安装，请先运行安装脚本${NC}"
+        exit 1
+    fi
+
+    # Detect OS and architecture
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+
+    case $ARCH in
+        x86_64)
+            ARCH="amd64"
+            ;;
+        aarch64|arm64)
+            ARCH="arm64"
+            ;;
+        *)
+            echo -e "${RED}不支持的架构: $ARCH${NC}"
+            exit 1
+            ;;
+    esac
+
+    case $OS in
+        linux)
+            BINARY="aliyun-spot-autoopen-linux-$ARCH"
+            ;;
+        darwin)
+            BINARY="aliyun-spot-autoopen-darwin-$ARCH"
+            ;;
+        *)
+            echo -e "${RED}不支持的操作系统: $OS${NC}"
+            exit 1
+            ;;
+    esac
+
+    echo -e "${YELLOW}检测到系统: $OS-$ARCH${NC}"
+    echo
+
+    # Get latest release
+    echo -e "${GREEN}[1/4] 获取最新版本...${NC}"
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${RED}无法获取最新版本${NC}"
+        exit 1
+    fi
+    echo "最新版本: $LATEST_VERSION"
+
+    # Download new binary
+    echo -e "${GREEN}[2/4] 下载新版本...${NC}"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_VERSION/$BINARY"
+    curl -L -o /tmp/aliyun-spot-autoopen-new "$DOWNLOAD_URL"
+    chmod +x /tmp/aliyun-spot-autoopen-new
+
+    # Stop service
+    echo -e "${GREEN}[3/4] 停止服务...${NC}"
+    systemctl stop $SERVICE_NAME 2>/dev/null || true
+
+    # Replace binary
+    mv /tmp/aliyun-spot-autoopen-new $INSTALL_DIR/aliyun-spot-autoopen
+
+    # Start service
+    echo -e "${GREEN}[4/4] 启动服务...${NC}"
+    systemctl start $SERVICE_NAME
+
+    echo
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}  升级完成！${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo
+    echo -e "当前版本: ${YELLOW}$LATEST_VERSION${NC}"
+    echo
+    echo -e "查看服务状态:"
+    echo -e "   ${GREEN}systemctl status $SERVICE_NAME${NC}"
+    echo
+    echo -e "查看日志:"
+    echo -e "   ${GREEN}journalctl -u $SERVICE_NAME -f${NC}"
+    echo
+
+    exit 0
+}
+
+# Check if upgrade mode
+if [ "$ACTION" = "upgrade" ]; then
+    do_upgrade
+fi
+
+# Normal install flow
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Aliyun Spot Instance Auto-Start${NC}"
+echo -e "${GREEN}  自动安装脚本${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')

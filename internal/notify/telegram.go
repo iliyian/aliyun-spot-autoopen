@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/iliyian/aliyun-spot-autoopen/internal/aliyun"
 )
 
 // TelegramNotifier sends notifications via Telegram
@@ -166,4 +169,54 @@ func (t *TelegramNotifier) NotifyMonitorStarted(instanceCount int, instances []s
 		instanceCount, time.Now().Format("2006-01-02 15:04:05"), instanceList)
 
 	return t.Send(message)
+}
+
+// NotifyBillingSummary sends a billing summary notification with hours and monthly estimate
+func (t *TelegramNotifier) NotifyBillingSummary(summary *aliyun.BillingSummary) error {
+	if summary == nil || len(summary.Instances) == 0 {
+		message := fmt.Sprintf(`📊 <b>扣费汇总</b> (最近 %d 小时)
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+暂无扣费记录
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+💰 总计: ¥0.00
+📈 月度估算: ¥0.00`, summary.Hours)
+		return t.Send(message)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📊 <b>扣费汇总</b> (最近 %d 小时)\n", summary.Hours))
+	sb.WriteString(fmt.Sprintf("⏰ %s ~ %s\n",
+		summary.StartTime.Format("01-02 15:04"),
+		summary.EndTime.Format("01-02 15:04")))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	for _, inst := range summary.Instances {
+		// Instance header with spec
+		if inst.InstanceSpec != "" {
+			sb.WriteString(fmt.Sprintf("🖥 <b>%s</b> [%s]\n", inst.InstanceName, inst.InstanceSpec))
+		} else {
+			sb.WriteString(fmt.Sprintf("🖥 <b>%s</b>\n", inst.InstanceName))
+		}
+		sb.WriteString(fmt.Sprintf("   <code>%s</code> | %s\n", inst.InstanceID, inst.Region))
+
+		// Billing items
+		for i, item := range inst.Items {
+			prefix := "├─"
+			if i == len(inst.Items)-1 {
+				prefix = "└─"
+			}
+			sb.WriteString(fmt.Sprintf("   %s %s: ¥%.4f\n", prefix, item.BillingItemName, item.PretaxAmount))
+		}
+
+		// Instance subtotal
+		sb.WriteString(fmt.Sprintf("   <b>小计: ¥%.4f</b>\n\n", inst.TotalAmount))
+	}
+
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("💰 <b>%d小时总计: ¥%.4f</b>\n", summary.Hours, summary.TotalAmount))
+	sb.WriteString(fmt.Sprintf("📈 <b>月度估算: ¥%.2f</b>", summary.MonthlyEstimate))
+
+	return t.Send(sb.String())
 }

@@ -41,6 +41,9 @@ func main() {
 		log.Fatalf("Failed to discover instances: %v", err)
 	}
 
+	// Start Telegram bot for commands
+	mon.StartBot()
+
 	// Setup cron scheduler
 	c := cron.New()
 	_, err = c.AddFunc(cfg.CronSchedule, func() {

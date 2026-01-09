@@ -8,6 +8,17 @@
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot-autoopen/main/install.sh)"
 ```
 
+## 🔄 一键升级
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot-autoopen/main/install.sh)" -- upgrade
+```
+
+或者在已安装的服务器上：
+```bash
+sudo /opt/aliyun-spot-autoopen/install.sh upgrade
+```
+
 安装完成后，编辑配置文件并启动服务：
 ```bash
 # 编辑配置
@@ -36,6 +47,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot
 - 🚀 **自动启动** - 检测到 Stopped 状态自动启动，失败重试 3 次
 - 📱 **Telegram 通知** - 实例回收、启动成功、启动失败都会通知
 - 🔇 **通知限流** - 同一实例 5 分钟内只通知一次，避免刷屏
+- 💰 **扣费查询** - 通过 Bot 命令查询扣费汇总和月度估算
+- 🤖 **Bot 交互命令** - 通过 Telegram 命令随时查询扣费和实例状态
 
 ## 快速开始
 
@@ -187,10 +200,15 @@ docker run -d --name aliyun-spot \
 | `RETRY_COUNT` | ❌ | `3` | 启动失败重试次数 |
 | `RETRY_INTERVAL` | ❌ | `30` | 重试间隔（秒） |
 | `NOTIFY_COOLDOWN` | ❌ | `300` | 通知冷却时间（秒） |
+| `BILLING_HOURS` | ❌ | `24` | 账单查询时间范围（小时） |
 | `LOG_LEVEL` | ❌ | `info` | 日志级别 |
 | `LOG_FILE` | ❌ | - | 日志文件路径 |
 
 *当 `TELEGRAM_ENABLED=true` 时必填
+
+**注意：** 使用扣费查询功能需要 AccessKey 具有 BSS（费用中心）API 权限：
+- `bss:QueryInstanceBill` - 查询实例账单
+- 或直接授予 `AliyunBSSReadOnlyAccess` 策略
 
 ## 通知示例
 
@@ -231,6 +249,45 @@ ID: i-xxx123
 ━━━━━━━━━━━━━━━
 请手动检查！
 ```
+
+**扣费汇总（/billing 命令）：**
+```
+📊 扣费汇总 (最近 24 小时)
+⏰ 01-08 17:27 ~ 01-09 17:27
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🖥 web-server-1 [ecs.t6-c4m1.large]
+   i-xxx123 | cn-hangzhou
+   ├─ 系统盘: ¥0.2907
+   ├─ 镜像费用: ¥0.0000
+   └─ 计算 (ecs.t6-c4m1.large): ¥0.2845
+   小计: ¥0.5753
+
+🖥 db-server [ecs.e-c4m1.large]
+   i-xxx456 | cn-shanghai
+   ├─ 计算 (ecs.e-c4m1.large): ¥0.1712
+   ├─ 系统盘: ¥0.2079
+   └─ 镜像费用: ¥0.0000
+   小计: ¥0.3791
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+💰 24小时总计: ¥0.9544
+📈 月度估算: ¥28.63
+```
+
+## Bot 交互命令
+
+程序启动后，你可以通过 Telegram 向 Bot 发送命令来查询信息：
+
+| 命令 | 说明 |
+|------|------|
+| `/billing` | 查询扣费汇总（最近 N 小时，可配置） |
+| `/status` | 查看所有实例状态 |
+| `/help` | 显示帮助信息 |
+
+**命令别名：** `/cost`、`/fee` 都可以查询扣费
+
+**注意：** Bot 只会响应配置的 `TELEGRAM_CHAT_ID` 发来的消息，其他聊天会被忽略。
 
 ## 常见问题
 
