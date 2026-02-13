@@ -18,6 +18,7 @@ type Monitor struct {
 	ecsClient     *aliyun.ECSClient
 	billingClient *aliyun.BillingClient
 	trafficClient *aliyun.TrafficClient
+	cbwpClient    *aliyun.CBWPClient
 	notifier      *notify.TelegramNotifier
 	botHandler    *notify.BotHandler
 
@@ -67,10 +68,16 @@ func New(cfg *config.Config) (*Monitor, error) {
 		}
 	}
 
+	// Initialize CBWP client
+	if cfg.TelegramEnabled {
+		m.cbwpClient = aliyun.NewCBWPClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret)
+	}
+
 	// Initialize bot handler for commands
 	if cfg.TelegramEnabled {
 		m.botHandler = notify.NewBotHandler(cfg.TelegramBotToken, cfg.TelegramChatID)
 		m.botHandler.SetCommandHandler(m.handleBotCommand)
+		m.botHandler.SetCallbackHandler(m.handleCallbackQuery)
 	}
 
 	return m, nil
@@ -92,6 +99,8 @@ func (m *Monitor) handleBotCommand(command string) error {
 		return m.SendTrafficReport()
 	case "status":
 		return m.sendStatusReport()
+	case "cbwp":
+		return m.sendCBWPInstanceList()
 	case "help":
 		return m.sendHelpMessage()
 	default:
@@ -153,6 +162,7 @@ func (m *Monitor) sendHelpMessage() error {
 /billing - 查询本月扣费汇总
 /traffic - 查询本月流量统计
 /status - 查看实例状态
+/cbwp - 管理共享带宽包
 /help - 显示帮助信息
 
 ━━━━━━━━━━━━━━━━
@@ -537,4 +547,327 @@ func (m *Monitor) shutdownRegionInstances(region string, trafficGB, limitGB floa
 			log.Errorf("Failed to send traffic shutdown notification: %v", err)
 		}
 	}
+}
+
+// sendCBWPInstanceList sends the instance list with inline keyboard for CBWP management
+func (m *Monitor) sendCBWPInstanceList() error {
+	if m.botHandler == nil {
+		return fmt.Errorf("bot handler not initialized")
+	}
+	if m.cbwpClient == nil {
+		return fmt.Errorf("CBWP client not initialized")
+	}
+
+	m.mu.RLock()
+	instances := make([]*aliyun.SpotInstance, len(m.instances))
+	copy(instances, m.instances)
+	m.mu.RUnlock()
+
+	if len(instances) == 0 {
+		return m.notifier.Send("🌐 <b>共享带宽管理</b>\n\n暂无监控的实例")
+	}
+
+	var keyboard [][]notify.InlineKeyboardButton
+	for _, inst := range instances {
+		keyboard = append(keyboard, []notify.InlineKeyboardButton{
+			{
+				Text:         fmt.Sprintf("%s (%s)", inst.InstanceName, inst.RegionID),
+				CallbackData: fmt.Sprintf("cbwp:select:%s", inst.InstanceID),
+			},
+		})
+	}
+
+	text := "🌐 <b>共享带宽管理</b>\n━━━━━━━━━━━━━━━━\n\n请选择要操作的实例："
+	return m.botHandler.SendMessageWithKeyboard(text, keyboard)
+}
+
+// handleCallbackQuery handles inline keyboard callback queries
+func (m *Monitor) handleCallbackQuery(callbackID, data string, messageID int64) error {
+	parts := strings.Split(data, ":")
+	if len(parts) < 2 || parts[0] != "cbwp" {
+		return nil
+	}
+
+	action := parts[1]
+
+	switch action {
+	case "select":
+		if len(parts) < 3 {
+			return nil
+		}
+		instanceID := parts[2]
+		return m.handleCBWPSelectInstance(callbackID, instanceID, messageID)
+
+	case "bind":
+		if len(parts) < 4 {
+			return nil
+		}
+		instanceID := parts[2]
+		bwpID := parts[3]
+		return m.handleCBWPBind(callbackID, instanceID, bwpID, messageID)
+
+	case "unbind":
+		if len(parts) < 4 {
+			return nil
+		}
+		instanceID := parts[2]
+		bwpID := parts[3]
+		return m.handleCBWPUnbind(callbackID, instanceID, bwpID, messageID)
+
+	case "back":
+		_ = m.botHandler.AnswerCallbackQuery(callbackID, "", false)
+		return m.handleCBWPBackToList(messageID)
+
+	default:
+		return nil
+	}
+}
+
+// handleCBWPSelectInstance handles instance selection for CBWP management
+func (m *Monitor) handleCBWPSelectInstance(callbackID, instanceID string, messageID int64) error {
+	_ = m.botHandler.AnswerCallbackQuery(callbackID, "查询中...", false)
+
+	// Find the instance
+	m.mu.RLock()
+	var inst *aliyun.SpotInstance
+	for _, i := range m.instances {
+		if i.InstanceID == instanceID {
+			inst = i
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	if inst == nil {
+		return m.botHandler.EditMessageText(messageID, "❌ 未找到该实例", nil)
+	}
+
+	// Query EIPs for this instance
+	eips, err := m.cbwpClient.DescribeEipAddresses(inst.RegionID, instanceID)
+	if err != nil {
+		log.Errorf("Failed to query EIPs for instance %s: %v", instanceID, err)
+		return m.botHandler.EditMessageText(messageID, fmt.Sprintf("❌ 查询 EIP 失败: %v", err), nil)
+	}
+
+	if len(eips) == 0 {
+		keyboard := [][]notify.InlineKeyboardButton{
+			{{Text: "« 返回", CallbackData: "cbwp:back"}},
+		}
+		return m.botHandler.EditMessageText(messageID,
+			fmt.Sprintf("🌐 <b>%s</b>\n\n该实例没有绑定 EIP，无法操作共享带宽包", inst.InstanceName),
+			keyboard)
+	}
+
+	// Query bandwidth packages in the same region
+	bwps, err := m.cbwpClient.DescribeCommonBandwidthPackages(inst.RegionID)
+	if err != nil {
+		log.Errorf("Failed to query bandwidth packages in region %s: %v", inst.RegionID, err)
+		return m.botHandler.EditMessageText(messageID, fmt.Sprintf("❌ 查询共享带宽包失败: %v", err), nil)
+	}
+
+	if len(bwps) == 0 {
+		keyboard := [][]notify.InlineKeyboardButton{
+			{{Text: "« 返回", CallbackData: "cbwp:back"}},
+		}
+		return m.botHandler.EditMessageText(messageID,
+			fmt.Sprintf("🌐 <b>%s</b>\n\n该地域 (%s) 没有共享带宽包", inst.InstanceName, inst.RegionID),
+			keyboard)
+	}
+
+	// Build status text and action buttons
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🌐 <b>%s</b>\n", inst.InstanceName))
+	sb.WriteString(fmt.Sprintf("   区域: %s\n", inst.RegionID))
+	sb.WriteString("━━━━━━━━━━━━━━━━\n\n")
+
+	var keyboard [][]notify.InlineKeyboardButton
+
+	for _, eip := range eips {
+		sb.WriteString(fmt.Sprintf("📍 EIP: <code>%s</code>\n", eip.IPAddress))
+
+		if eip.BandwidthPackageID != "" {
+			// EIP is in a bandwidth package - show unbind option
+			bwpName := eip.BandwidthPackageID
+			for _, bwp := range bwps {
+				if bwp.BandwidthPackageID == eip.BandwidthPackageID {
+					if bwp.Name != "" {
+						bwpName = bwp.Name
+					}
+					sb.WriteString(fmt.Sprintf("   📦 当前带宽包: %s (%sMbps)\n", bwpName, bwp.Bandwidth))
+					break
+				}
+			}
+			sb.WriteString("   状态: ✅ 已加入共享带宽\n\n")
+
+			keyboard = append(keyboard, []notify.InlineKeyboardButton{
+				{
+					Text:         fmt.Sprintf("🔴 移出 %s", eip.IPAddress),
+					CallbackData: fmt.Sprintf("cbwp:unbind:%s:%s", instanceID, eip.BandwidthPackageID),
+				},
+			})
+		} else {
+			// EIP is not in any bandwidth package - show bind options
+			sb.WriteString("   状态: ⚪ 未加入共享带宽\n\n")
+
+			for _, bwp := range bwps {
+				bwpLabel := bwp.BandwidthPackageID
+				if bwp.Name != "" {
+					bwpLabel = bwp.Name
+				}
+				keyboard = append(keyboard, []notify.InlineKeyboardButton{
+					{
+						Text:         fmt.Sprintf("🟢 加入 %s (%sMbps)", bwpLabel, bwp.Bandwidth),
+						CallbackData: fmt.Sprintf("cbwp:bind:%s:%s", instanceID, bwp.BandwidthPackageID),
+					},
+				})
+			}
+		}
+	}
+
+	keyboard = append(keyboard, []notify.InlineKeyboardButton{
+		{Text: "« 返回", CallbackData: "cbwp:back"},
+	})
+
+	return m.botHandler.EditMessageText(messageID, sb.String(), keyboard)
+}
+
+// handleCBWPBind handles binding an EIP to a bandwidth package
+func (m *Monitor) handleCBWPBind(callbackID, instanceID, bwpID string, messageID int64) error {
+	_ = m.botHandler.AnswerCallbackQuery(callbackID, "正在加入共享带宽包...", false)
+
+	// Find the instance
+	m.mu.RLock()
+	var inst *aliyun.SpotInstance
+	for _, i := range m.instances {
+		if i.InstanceID == instanceID {
+			inst = i
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	if inst == nil {
+		return m.botHandler.EditMessageText(messageID, "❌ 未找到该实例", nil)
+	}
+
+	// Get EIPs
+	eips, err := m.cbwpClient.DescribeEipAddresses(inst.RegionID, instanceID)
+	if err != nil || len(eips) == 0 {
+		return m.botHandler.EditMessageText(messageID, "❌ 查询 EIP 失败", nil)
+	}
+
+	// Find the first unbound EIP
+	var targetEIP *aliyun.EIPInfo
+	for _, eip := range eips {
+		if eip.BandwidthPackageID == "" {
+			targetEIP = eip
+			break
+		}
+	}
+
+	if targetEIP == nil {
+		return m.botHandler.EditMessageText(messageID, "❌ 没有可用的 EIP（所有 EIP 已在带宽包中）", nil)
+	}
+
+	// Execute bind
+	if err := m.cbwpClient.AddCommonBandwidthPackageIp(inst.RegionID, bwpID, targetEIP.AllocationID); err != nil {
+		log.Errorf("Failed to bind EIP %s to CBWP %s: %v", targetEIP.AllocationID, bwpID, err)
+		keyboard := [][]notify.InlineKeyboardButton{
+			{{Text: "« 返回", CallbackData: "cbwp:back"}},
+		}
+		return m.botHandler.EditMessageText(messageID,
+			fmt.Sprintf("❌ <b>加入失败</b>\n\nEIP: %s\n错误: %v", targetEIP.IPAddress, err),
+			keyboard)
+	}
+
+	keyboard := [][]notify.InlineKeyboardButton{
+		{{Text: "« 返回实例列表", CallbackData: "cbwp:back"}},
+	}
+	return m.botHandler.EditMessageText(messageID,
+		fmt.Sprintf("✅ <b>已加入共享带宽</b>\n━━━━━━━━━━━━━━━━\n实例: %s\nEIP: <code>%s</code>\n带宽包: <code>%s</code>\n时间: %s",
+			inst.InstanceName, targetEIP.IPAddress, bwpID, time.Now().Format("2006-01-02 15:04:05")),
+		keyboard)
+}
+
+// handleCBWPUnbind handles removing an EIP from a bandwidth package
+func (m *Monitor) handleCBWPUnbind(callbackID, instanceID, bwpID string, messageID int64) error {
+	_ = m.botHandler.AnswerCallbackQuery(callbackID, "正在移出共享带宽包...", false)
+
+	// Find the instance
+	m.mu.RLock()
+	var inst *aliyun.SpotInstance
+	for _, i := range m.instances {
+		if i.InstanceID == instanceID {
+			inst = i
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	if inst == nil {
+		return m.botHandler.EditMessageText(messageID, "❌ 未找到该实例", nil)
+	}
+
+	// Get EIPs
+	eips, err := m.cbwpClient.DescribeEipAddresses(inst.RegionID, instanceID)
+	if err != nil || len(eips) == 0 {
+		return m.botHandler.EditMessageText(messageID, "❌ 查询 EIP 失败", nil)
+	}
+
+	// Find the EIP in this bandwidth package
+	var targetEIP *aliyun.EIPInfo
+	for _, eip := range eips {
+		if eip.BandwidthPackageID == bwpID {
+			targetEIP = eip
+			break
+		}
+	}
+
+	if targetEIP == nil {
+		return m.botHandler.EditMessageText(messageID, "❌ 未找到在该带宽包中的 EIP", nil)
+	}
+
+	// Execute unbind
+	if err := m.cbwpClient.RemoveCommonBandwidthPackageIp(inst.RegionID, bwpID, targetEIP.AllocationID); err != nil {
+		log.Errorf("Failed to unbind EIP %s from CBWP %s: %v", targetEIP.AllocationID, bwpID, err)
+		keyboard := [][]notify.InlineKeyboardButton{
+			{{Text: "« 返回", CallbackData: "cbwp:back"}},
+		}
+		return m.botHandler.EditMessageText(messageID,
+			fmt.Sprintf("❌ <b>移出失败</b>\n\nEIP: %s\n错误: %v", targetEIP.IPAddress, err),
+			keyboard)
+	}
+
+	keyboard := [][]notify.InlineKeyboardButton{
+		{{Text: "« 返回实例列表", CallbackData: "cbwp:back"}},
+	}
+	return m.botHandler.EditMessageText(messageID,
+		fmt.Sprintf("✅ <b>已移出共享带宽</b>\n━━━━━━━━━━━━━━━━\n实例: %s\nEIP: <code>%s</code>\n带宽包: <code>%s</code>\n时间: %s",
+			inst.InstanceName, targetEIP.IPAddress, bwpID, time.Now().Format("2006-01-02 15:04:05")),
+		keyboard)
+}
+
+// handleCBWPBackToList handles going back to the instance list
+func (m *Monitor) handleCBWPBackToList(messageID int64) error {
+	m.mu.RLock()
+	instances := make([]*aliyun.SpotInstance, len(m.instances))
+	copy(instances, m.instances)
+	m.mu.RUnlock()
+
+	if len(instances) == 0 {
+		return m.botHandler.EditMessageText(messageID, "🌐 <b>共享带宽管理</b>\n\n暂无监控的实例", nil)
+	}
+
+	var keyboard [][]notify.InlineKeyboardButton
+	for _, inst := range instances {
+		keyboard = append(keyboard, []notify.InlineKeyboardButton{
+			{
+				Text:         fmt.Sprintf("%s (%s)", inst.InstanceName, inst.RegionID),
+				CallbackData: fmt.Sprintf("cbwp:select:%s", inst.InstanceID),
+			},
+		})
+	}
+
+	text := "🌐 <b>共享带宽管理</b>\n━━━━━━━━━━━━━━━━\n\n请选择要操作的实例："
+	return m.botHandler.EditMessageText(messageID, text, keyboard)
 }
