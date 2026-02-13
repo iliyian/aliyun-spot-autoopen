@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -53,6 +54,21 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("Failed to setup cron: %v", err)
+	}
+
+	// Setup traffic check cron if enabled
+	if cfg.TrafficShutdownEnabled {
+		trafficSchedule := fmt.Sprintf("@every %ds", cfg.TrafficCheckInterval)
+		_, err = c.AddFunc(trafficSchedule, func() {
+			if err := mon.CheckTraffic(); err != nil {
+				log.Errorf("Traffic check failed: %v", err)
+			}
+		})
+		if err != nil {
+			log.Fatalf("Failed to setup traffic check cron: %v", err)
+		}
+		log.Infof("Traffic shutdown enabled: China limit=%.0f GB, Non-China limit=%.0f GB, check every %ds",
+			cfg.TrafficLimitChinaGB, cfg.TrafficLimitNonChinaGB, cfg.TrafficCheckInterval)
 	}
 
 	c.Start()

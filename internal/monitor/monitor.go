@@ -28,6 +28,11 @@ type Monitor struct {
 	// Notification cooldown tracking
 	lastNotify   map[string]time.Time
 	lastNotifyMu sync.RWMutex
+
+	// Traffic shutdown tracking (independent for China/non-China)
+	chinaShutdown     bool
+	nonChinaShutdown  bool
+	trafficShutdownMu sync.RWMutex
 }
 
 // New creates a new monitor
@@ -52,8 +57,8 @@ func New(cfg *config.Config) (*Monitor, error) {
 		}
 	}
 
-	// Initialize traffic client for bot commands
-	if cfg.TelegramEnabled {
+	// Initialize traffic client for bot commands or traffic shutdown
+	if cfg.TelegramEnabled || cfg.TrafficShutdownEnabled {
 		trafficClient, err := aliyun.NewTrafficClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret)
 		if err != nil {
 			log.Warnf("Failed to create traffic client: %v", err)
@@ -204,6 +209,18 @@ func (m *Monitor) Check() error {
 
 // checkInstance checks a single instance and starts it if stopped
 func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
+	// Check if this instance is blocked by traffic shutdown
+	m.trafficShutdownMu.RLock()
+	isChina := aliyun.IsChinaMainlandRegion(inst.RegionID)
+	blocked := (isChina && m.chinaShutdown) || (!isChina && m.nonChinaShutdown)
+	m.trafficShutdownMu.RUnlock()
+
+	if blocked {
+		log.Debugf("Instance %s (%s) skipped: traffic shutdown active for %s region",
+			inst.InstanceName, inst.InstanceID, inst.RegionID)
+		return nil
+	}
+
 	// Get current status
 	status, err := m.ecsClient.GetInstanceStatus(inst.RegionID, inst.InstanceID)
 	if err != nil {
@@ -395,12 +412,129 @@ func (m *Monitor) SendTrafficReport() error {
 		return fmt.Errorf("failed to query traffic: %w", err)
 	}
 
-	// Send notification
-	if err := m.notifier.NotifyTrafficSummary(summary); err != nil {
-		return fmt.Errorf("failed to send traffic notification: %w", err)
+	// Send notification with limits if traffic shutdown is enabled
+	if m.cfg.TrafficShutdownEnabled {
+		m.trafficShutdownMu.RLock()
+		chinaSD := m.chinaShutdown
+		nonChinaSD := m.nonChinaShutdown
+		m.trafficShutdownMu.RUnlock()
+
+		if err := m.notifier.NotifyTrafficSummaryWithLimits(summary,
+			m.cfg.TrafficLimitChinaGB, m.cfg.TrafficLimitNonChinaGB,
+			chinaSD, nonChinaSD); err != nil {
+			return fmt.Errorf("failed to send traffic notification: %w", err)
+		}
+	} else {
+		if err := m.notifier.NotifyTrafficSummary(summary); err != nil {
+			return fmt.Errorf("failed to send traffic notification: %w", err)
+		}
 	}
 
 	log.Infof("Traffic report sent successfully (total: %.2f GB, China: %.2f GB, Non-China: %.2f GB)",
 		summary.TotalTrafficGB, summary.ChinaMainland.TrafficGB, summary.NonChinaMainland.TrafficGB)
 	return nil
+}
+
+// CheckTraffic checks traffic usage and stops instances if limits are exceeded
+func (m *Monitor) CheckTraffic() error {
+	if m.trafficClient == nil {
+		return fmt.Errorf("traffic client not initialized")
+	}
+
+	if !m.cfg.TrafficShutdownEnabled {
+		return nil
+	}
+
+	log.Debug("Checking traffic limits...")
+
+	// Query traffic for current month
+	summary, err := m.trafficClient.QueryInternetTraffic()
+	if err != nil {
+		return fmt.Errorf("failed to query traffic: %w", err)
+	}
+
+	chinaTrafficGB := summary.ChinaMainland.TrafficGB
+	nonChinaTrafficGB := summary.NonChinaMainland.TrafficGB
+
+	log.Debugf("Traffic check: China=%.2f/%.0f GB, Non-China=%.2f/%.0f GB",
+		chinaTrafficGB, m.cfg.TrafficLimitChinaGB,
+		nonChinaTrafficGB, m.cfg.TrafficLimitNonChinaGB)
+
+	m.trafficShutdownMu.Lock()
+	defer m.trafficShutdownMu.Unlock()
+
+	// Check China mainland traffic
+	if chinaTrafficGB >= m.cfg.TrafficLimitChinaGB {
+		if !m.chinaShutdown {
+			m.chinaShutdown = true
+			log.Warnf("China mainland traffic %.2f GB exceeded limit %.0f GB, shutting down China instances",
+				chinaTrafficGB, m.cfg.TrafficLimitChinaGB)
+			go m.shutdownRegionInstances("china", chinaTrafficGB, m.cfg.TrafficLimitChinaGB)
+		}
+	} else if m.chinaShutdown {
+		// New month or traffic decreased (shouldn't happen normally)
+		log.Infof("China mainland traffic %.2f GB is below limit %.0f GB, clearing shutdown flag",
+			chinaTrafficGB, m.cfg.TrafficLimitChinaGB)
+		m.chinaShutdown = false
+	}
+
+	// Check non-China traffic
+	if nonChinaTrafficGB >= m.cfg.TrafficLimitNonChinaGB {
+		if !m.nonChinaShutdown {
+			m.nonChinaShutdown = true
+			log.Warnf("Non-China traffic %.2f GB exceeded limit %.0f GB, shutting down non-China instances",
+				nonChinaTrafficGB, m.cfg.TrafficLimitNonChinaGB)
+			go m.shutdownRegionInstances("non-china", nonChinaTrafficGB, m.cfg.TrafficLimitNonChinaGB)
+		}
+	} else if m.nonChinaShutdown {
+		log.Infof("Non-China traffic %.2f GB is below limit %.0f GB, clearing shutdown flag",
+			nonChinaTrafficGB, m.cfg.TrafficLimitNonChinaGB)
+		m.nonChinaShutdown = false
+	}
+
+	return nil
+}
+
+// shutdownRegionInstances stops all running instances in the specified region group
+func (m *Monitor) shutdownRegionInstances(region string, trafficGB, limitGB float64) {
+	m.mu.RLock()
+	instances := make([]*aliyun.SpotInstance, len(m.instances))
+	copy(instances, m.instances)
+	m.mu.RUnlock()
+
+	var stoppedInstances []string
+
+	for _, inst := range instances {
+		isChina := aliyun.IsChinaMainlandRegion(inst.RegionID)
+		if (region == "china" && !isChina) || (region == "non-china" && isChina) {
+			continue
+		}
+
+		// Check if instance is running
+		status, err := m.ecsClient.GetInstanceStatus(inst.RegionID, inst.InstanceID)
+		if err != nil {
+			log.Errorf("Failed to get status for instance %s: %v", inst.InstanceID, err)
+			continue
+		}
+
+		if status != "Running" {
+			continue
+		}
+
+		log.Warnf("Stopping instance %s (%s) due to traffic limit exceeded", inst.InstanceName, inst.InstanceID)
+		if err := m.ecsClient.StopInstance(inst.RegionID, inst.InstanceID, "StopCharging"); err != nil {
+			log.Errorf("Failed to stop instance %s: %v", inst.InstanceID, err)
+			continue
+		}
+
+		stoppedInstances = append(stoppedInstances, fmt.Sprintf("%s (%s) - %s",
+			inst.InstanceName, inst.InstanceID, aliyun.GetRegionDisplayName(inst.RegionID)))
+	}
+
+	// Send notification
+	if m.notifier != nil && len(stoppedInstances) > 0 {
+		if err := m.notifier.NotifyTrafficShutdown(region, trafficGB, limitGB, stoppedInstances); err != nil {
+			log.Errorf("Failed to send traffic shutdown notification: %v", err)
+		}
+	}
 }

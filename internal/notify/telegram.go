@@ -188,7 +188,7 @@ func (t *TelegramNotifier) NotifyBillingSummary(summary *aliyun.BillingSummary) 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 <b>扣费汇总</b> (%s)\n", summary.BillingCycle))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	
+
 	// Statistics section
 	sb.WriteString(fmt.Sprintf("📅 统计区间: %s 01日 ~ %s\n",
 		summary.BillingCycle,
@@ -226,7 +226,7 @@ func (t *TelegramNotifier) NotifyBillingSummary(summary *aliyun.BillingSummary) 
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	sb.WriteString(fmt.Sprintf("💰 <b>本月累计: ¥%.4f</b>\n", summary.TotalAmount))
 	sb.WriteString(fmt.Sprintf("📈 <b>月度估算: ¥%.2f</b>\n", summary.MonthlyEstimate))
-	
+
 	// Show calculation method
 	if summary.EstimateMethod != "" {
 		sb.WriteString(fmt.Sprintf("📝 <i>%s</i>", summary.EstimateMethod))
@@ -250,7 +250,7 @@ func (t *TelegramNotifier) NotifyTrafficSummary(summary *aliyun.TrafficSummary) 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📶 <b>流量统计</b> (%s)\n", summary.BillingCycle))
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
-	
+
 	// Statistics section
 	sb.WriteString(fmt.Sprintf("📅 统计区间: %s 01日 ~ %s\n",
 		summary.BillingCycle,
@@ -315,8 +315,133 @@ func (t *TelegramNotifier) NotifyTrafficSummary(summary *aliyun.TrafficSummary) 
 
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
 	sb.WriteString(fmt.Sprintf("📈 <b>本月总流量: %s</b>\n", aliyun.FormatTrafficSize(summary.TotalTraffic)))
-	
+
 	// Show percentage breakdown
+	if summary.TotalTraffic > 0 {
+		chinaPercent := float64(summary.ChinaMainland.Traffic) / float64(summary.TotalTraffic) * 100
+		nonChinaPercent := float64(summary.NonChinaMainland.Traffic) / float64(summary.TotalTraffic) * 100
+		sb.WriteString(fmt.Sprintf("📊 中国大陆: %.1f%% | 非中国大陆: %.1f%%", chinaPercent, nonChinaPercent))
+	}
+
+	return t.Send(sb.String())
+}
+
+// NotifyTrafficShutdown sends a notification when instances are stopped due to traffic limit
+func (t *TelegramNotifier) NotifyTrafficShutdown(region string, trafficGB, limitGB float64, stoppedInstances []string) error {
+	regionLabel := "🇨🇳 中国大陆"
+	if region == "non-china" {
+		regionLabel = "🌏 非中国大陆"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🚨 <b>流量超额自动关机</b>\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+	sb.WriteString(fmt.Sprintf("📍 区域: %s\n", regionLabel))
+	sb.WriteString(fmt.Sprintf("📊 当前流量: <b>%.2f GB</b>\n", trafficGB))
+	sb.WriteString(fmt.Sprintf("🚫 流量阈值: %.2f GB\n", limitGB))
+	sb.WriteString(fmt.Sprintf("⏰ 时间: %s\n\n", time.Now().Format("2006-01-02 15:04:05")))
+
+	if len(stoppedInstances) > 0 {
+		sb.WriteString("🔴 <b>已关闭实例:</b>\n")
+		for _, inst := range stoppedInstances {
+			sb.WriteString(fmt.Sprintf("   • %s\n", inst))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("💡 <i>使用节省停机模式，不再计费 vCPU/内存</i>\n")
+	sb.WriteString("⚠️ <i>自动重启已暂停，新月流量重置后恢复</i>")
+
+	return t.Send(sb.String())
+}
+
+// NotifyTrafficSummaryWithLimits sends a traffic summary with threshold info
+func (t *TelegramNotifier) NotifyTrafficSummaryWithLimits(summary *aliyun.TrafficSummary, chinaLimitGB, nonChinaLimitGB float64, chinaShutdown, nonChinaShutdown bool) error {
+	if summary == nil {
+		message := `📶 <b>流量统计</b>
+━━━━━━━━
+
+暂无流量数据
+
+━━━━━━━━━━━━━━━━`
+		return t.Send(message)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📶 <b>流量统计</b> (%s)\n", summary.BillingCycle))
+	sb.WriteString("━━━━━━━━━━━━━━━━\n")
+
+	// Statistics section
+	sb.WriteString(fmt.Sprintf("📅 统计区间: %s 01日 ~ %s\n",
+		summary.BillingCycle,
+		summary.EndTime.Format("02日 15:04")))
+	sb.WriteString("━━━━━━━━━━━━━━━━\n\n")
+
+	// China Mainland section
+	sb.WriteString("🇨🇳 <b>中国大陆</b>\n")
+	if summary.ChinaMainland.Traffic > 0 {
+		sb.WriteString(fmt.Sprintf("   📊 总流量: <b>%s</b> / %.0f GB\n", aliyun.FormatTrafficSize(summary.ChinaMainland.Traffic), chinaLimitGB))
+		remainChina := chinaLimitGB - summary.ChinaMainland.TrafficGB
+		if remainChina < 0 {
+			remainChina = 0
+		}
+		sb.WriteString(fmt.Sprintf("   📉 剩余额度: %.2f GB\n", remainChina))
+		if chinaShutdown {
+			sb.WriteString("   🔴 <b>已超额关机</b>\n")
+		}
+		sb.WriteString(fmt.Sprintf("   🌐 区域数: %d\n", summary.ChinaMainland.RegionCount))
+		if len(summary.ChinaMainland.ProductDetails) > 0 {
+			sb.WriteString("   📦 产品明细:\n")
+			for product, traffic := range summary.ChinaMainland.ProductDetails {
+				if traffic > 0 {
+					sb.WriteString(fmt.Sprintf("      • %s: %s\n", product, aliyun.FormatTrafficSize(traffic)))
+				}
+			}
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("   暂无流量 (阈值: %.0f GB)\n", chinaLimitGB))
+	}
+	sb.WriteString("\n")
+
+	// Non-China Mainland section
+	sb.WriteString("🌏 <b>非中国大陆</b>\n")
+	if summary.NonChinaMainland.Traffic > 0 {
+		sb.WriteString(fmt.Sprintf("   📊 总流量: <b>%s</b> / %.0f GB\n", aliyun.FormatTrafficSize(summary.NonChinaMainland.Traffic), nonChinaLimitGB))
+		remainNonChina := nonChinaLimitGB - summary.NonChinaMainland.TrafficGB
+		if remainNonChina < 0 {
+			remainNonChina = 0
+		}
+		sb.WriteString(fmt.Sprintf("   📉 剩余额度: %.2f GB\n", remainNonChina))
+		if nonChinaShutdown {
+			sb.WriteString("   🔴 <b>已超额关机</b>\n")
+		}
+		sb.WriteString(fmt.Sprintf("   🌐 区域数: %d\n", summary.NonChinaMainland.RegionCount))
+		if len(summary.NonChinaMainland.ProductDetails) > 0 {
+			sb.WriteString("   📦 产品明细:\n")
+			for product, traffic := range summary.NonChinaMainland.ProductDetails {
+				if traffic > 0 {
+					sb.WriteString(fmt.Sprintf("      • %s: %s\n", product, aliyun.FormatTrafficSize(traffic)))
+				}
+			}
+		}
+		if len(summary.RegionDetails) > 0 {
+			sb.WriteString("   📍 区域明细:\n")
+			for _, detail := range summary.RegionDetails {
+				if !aliyun.IsChinaMainlandRegion(detail.BusinessRegionId) && detail.Traffic > 0 {
+					regionName := aliyun.GetRegionDisplayName(detail.BusinessRegionId)
+					sb.WriteString(fmt.Sprintf("      • %s: %s\n", regionName, aliyun.FormatTrafficSize(detail.Traffic)))
+				}
+			}
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("   暂无流量 (阈值: %.0f GB)\n", nonChinaLimitGB))
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("📈 <b>本月总流量: %s</b>\n", aliyun.FormatTrafficSize(summary.TotalTraffic)))
+
 	if summary.TotalTraffic > 0 {
 		chinaPercent := float64(summary.ChinaMainland.Traffic) / float64(summary.TotalTraffic) * 100
 		nonChinaPercent := float64(summary.NonChinaMainland.Traffic) / float64(summary.TotalTraffic) * 100

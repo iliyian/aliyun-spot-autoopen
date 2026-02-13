@@ -251,6 +251,32 @@ func (c *ECSClient) StartInstance(regionID, instanceID string) error {
 	return nil
 }
 
+// StopInstance stops an instance with the specified stopped mode
+// stoppedMode can be "StopCharging" (cost-saving) or "KeepCharging"
+func (c *ECSClient) StopInstance(regionID, instanceID, stoppedMode string) error {
+	client, err := c.getClient(regionID)
+	if err != nil {
+		return err
+	}
+
+	request := ecs.CreateStopInstanceRequest()
+	request.Scheme = "https"
+	request.InstanceId = instanceID
+	request.StoppedMode = stoppedMode
+
+	_, err = client.StopInstance(request)
+	if err != nil {
+		// Check if instance is already stopped
+		if strings.Contains(err.Error(), "IncorrectInstanceStatus") {
+			log.Warnf("Instance %s is not in running state, skipping stop", instanceID)
+			return nil
+		}
+		return fmt.Errorf("failed to stop instance %s: %w", instanceID, err)
+	}
+
+	return nil
+}
+
 // DiscoverAllSpotInstances discovers all spot instances across all regions
 func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
 	log.Info("Fetching all regions...")

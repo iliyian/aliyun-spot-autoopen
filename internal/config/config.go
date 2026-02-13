@@ -33,6 +33,12 @@ type Config struct {
 	HealthCheckTimeout  int // seconds
 	HealthCheckInterval int // seconds
 
+	// Traffic auto-shutdown settings
+	TrafficShutdownEnabled bool
+	TrafficLimitChinaGB    float64 // China mainland traffic limit in GB
+	TrafficLimitNonChinaGB float64 // Non-China traffic limit in GB
+	TrafficCheckInterval   int     // seconds
+
 	// Logging
 	LogLevel string
 	LogFile  string
@@ -64,6 +70,12 @@ func Load() (*Config, error) {
 		HealthCheckEnabled:  getEnvBool("HEALTH_CHECK_ENABLED", true),
 		HealthCheckTimeout:  getEnvInt("HEALTH_CHECK_TIMEOUT", 300),
 		HealthCheckInterval: getEnvInt("HEALTH_CHECK_INTERVAL", 10),
+
+		// Traffic auto-shutdown settings
+		TrafficShutdownEnabled: getEnvBool("TRAFFIC_SHUTDOWN_ENABLED", true),
+		TrafficLimitChinaGB:    getEnvFloat64("TRAFFIC_LIMIT_CHINA_GB", 19),
+		TrafficLimitNonChinaGB: getEnvFloat64("TRAFFIC_LIMIT_NON_CHINA_GB", 195),
+		TrafficCheckInterval:   getEnvInt("TRAFFIC_CHECK_INTERVAL", 300),
 
 		// Logging
 		LogLevel: getEnvString("LOG_LEVEL", "info"),
@@ -113,6 +125,15 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvFloat64(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
 		}
 	}
 	return defaultValue
