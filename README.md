@@ -50,6 +50,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot
 - 💰 **扣费查询** - 通过 Bot 命令查询扣费汇总和月度估算
 - 📶 **流量统计** - 查询本月流量使用情况，区分中国大陆和非中国大陆
 - 🤖 **Bot 交互命令** - 通过 Telegram 命令随时查询扣费、流量和实例状态
+- 🌐 **共享带宽管理** - 通过 Telegram 按钮交互，将实例 EIP 加入或移出共享带宽包
+- 🚨 **流量超额自动关机** - 中国大陆/非中国大陆流量分别设置阈值，超额自动停机并通知
 
 ## 快速开始
 
@@ -65,6 +67,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot
 - `ecs:DescribeInstances`
 - `ecs:DescribeInstanceStatus`
 - `ecs:StartInstance`
+- `ecs:StopInstance`
+- `vpc:DescribeEipAddresses`
+- `vpc:DescribeCommonBandwidthPackages`
+- `vpc:AddCommonBandwidthPackageIp`
+- `vpc:RemoveCommonBandwidthPackageIp`
 
 ### 2. 创建 Telegram Bot
 
@@ -203,6 +210,10 @@ docker run -d --name aliyun-spot \
 | `NOTIFY_COOLDOWN` | ❌ | `300` | 通知冷却时间（秒） |
 | `LOG_LEVEL` | ❌ | `info` | 日志级别 |
 | `LOG_FILE` | ❌ | - | 日志文件路径 |
+| `TRAFFIC_SHUTDOWN_ENABLED` | ❌ | `true` | 是否启用流量超额自动关机 |
+| `TRAFFIC_LIMIT_CHINA_GB` | ❌ | `19` | 中国大陆流量阈值（GB） |
+| `TRAFFIC_LIMIT_NON_CHINA_GB` | ❌ | `195` | 非中国大陆流量阈值（GB） |
+| `TRAFFIC_CHECK_INTERVAL` | ❌ | `300` | 流量检查间隔（秒） |
 
 *当 `TELEGRAM_ENABLED=true` 时必填
 
@@ -213,6 +224,13 @@ docker run -d --name aliyun-spot \
 **注意：** 使用流量查询功能需要 AccessKey 具有 CDT（云数据传输）API 权限：
 - `cdt:ListCdtInternetTraffic` - 查询互联网流量
 - 或直接授予 `AliyunCDTReadOnlyAccess` 策略
+
+**注意：** 使用共享带宽管理功能需要 AccessKey 具有 VPC API 权限：
+- `vpc:DescribeEipAddresses` - 查询弹性公网 IP
+- `vpc:DescribeCommonBandwidthPackages` - 查询共享带宽包
+- `vpc:AddCommonBandwidthPackageIp` - 将 EIP 加入共享带宽包
+- `vpc:RemoveCommonBandwidthPackageIp` - 将 EIP 移出共享带宽包
+- 或直接授予 `AliyunVPCFullAccess` 策略
 
 ## 通知示例
 
@@ -312,6 +330,42 @@ ID: i-xxx123
 📊 中国大陆: 5.5% | 非中国大陆: 94.5%
 ```
 
+**流量超额自动关机通知：**
+```
+🚨 流量超额自动关机
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+📍 区域: 🌏 非中国大陆
+📊 当前流量: 195.32 GB
+🚫 流量阈值: 195.00 GB
+⏰ 时间: 2024-01-15 03:20:00
+
+🔴 已关闭实例:
+   • web-server-hk (i-xxx789) - 香港
+   • app-server-jp (i-xxx012) - 日本(东京)
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+💡 使用节省停机模式，不再计费 vCPU/内存
+⚠️ 自动重启已暂停，新月流量重置后恢复
+```
+
+**共享带宽管理（/cbwp 命令）：**
+
+发送 `/cbwp` 后，Bot 会显示实例列表按钮。点击实例后自动查询该实例的 EIP 和同地域共享带宽包，显示当前状态和操作按钮（加入/移出）。操作完成后会显示结果。
+
+```
+🌐 web-server-1
+   区域: cn-hangzhou
+━━━━━━━━━━━━━━━━
+
+📍 EIP: 47.xxx.xxx.xxx
+   📦 当前带宽包: my-cbwp (100Mbps)
+   状态: ✅ 已加入共享带宽
+
+[🔴 移出 47.xxx.xxx.xxx]
+[« 返回]
+```
+
 ## Bot 交互命令
 
 程序启动后，你可以通过 Telegram 向 Bot 发送命令来查询信息：
@@ -321,6 +375,7 @@ ID: i-xxx123
 | `/billing` | 查询本月扣费汇总 |
 | `/traffic` | 查询本月流量统计 |
 | `/status` | 查看所有实例状态 |
+| `/cbwp` | 管理共享带宽包（加入/移出） |
 | `/help` | 显示帮助信息 |
 
 **命令别名：**
