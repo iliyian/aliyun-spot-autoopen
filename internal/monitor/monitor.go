@@ -171,6 +171,42 @@ func (m *Monitor) sendHelpMessage() error {
 	return m.notifier.Send(message)
 }
 
+// refreshInstances re-discovers spot instances and updates the tracked list.
+// It logs additions and removals but does not send startup notifications.
+func (m *Monitor) refreshInstances() error {
+	instances, err := m.ecsClient.DiscoverAllSpotInstances()
+	if err != nil {
+		return fmt.Errorf("failed to discover instances: %w", err)
+	}
+
+	m.mu.Lock()
+	oldMap := make(map[string]bool, len(m.instances))
+	for _, inst := range m.instances {
+		oldMap[inst.InstanceID] = true
+	}
+	newMap := make(map[string]bool, len(instances))
+	for _, inst := range instances {
+		newMap[inst.InstanceID] = true
+	}
+
+	// Log changes
+	for _, inst := range instances {
+		if !oldMap[inst.InstanceID] {
+			log.Infof("New instance discovered: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+		}
+	}
+	for _, inst := range m.instances {
+		if !newMap[inst.InstanceID] {
+			log.Infof("Instance removed: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+		}
+	}
+
+	m.instances = instances
+	m.mu.Unlock()
+
+	return nil
+}
+
 // DiscoverInstances discovers all spot instances across all regions
 func (m *Monitor) DiscoverInstances() error {
 	instances, err := m.ecsClient.DiscoverAllSpotInstances()
@@ -203,6 +239,11 @@ func (m *Monitor) DiscoverInstances() error {
 
 // Check checks all instances and starts stopped ones
 func (m *Monitor) Check() error {
+	// Re-discover instances to pick up newly added or removed ones
+	if err := m.refreshInstances(); err != nil {
+		log.Warnf("Failed to refresh instances, using cached list: %v", err)
+	}
+
 	m.mu.RLock()
 	instances := make([]*aliyun.SpotInstance, len(m.instances))
 	copy(instances, m.instances)
