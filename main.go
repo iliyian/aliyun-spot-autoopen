@@ -71,6 +71,21 @@ func main() {
 			cfg.TrafficLimitChinaGB, cfg.TrafficLimitNonChinaGB, cfg.TrafficCheckInterval)
 	}
 
+	// Setup GCP credits check cron if enabled
+	if cfg.GCPCreditsEnabled {
+		gcpSchedule := fmt.Sprintf("@every %ds", cfg.GCPCreditsCheckInterval)
+		_, err = c.AddFunc(gcpSchedule, func() {
+			if err := mon.CheckGCPCredits(); err != nil {
+				log.Errorf("GCP credits check failed: %v", err)
+			}
+		})
+		if err != nil {
+			log.Fatalf("Failed to setup GCP credits check cron: %v", err)
+		}
+		log.Infof("GCP credits monitoring enabled: total=$%.0f, alert at %.0f%%, check every %ds",
+			cfg.GCPCreditsTotal, cfg.GCPCreditsAlertPercent, cfg.GCPCreditsCheckInterval)
+	}
+
 	c.Start()
 	log.Infof("Scheduler started, checking every %d seconds", cfg.CheckInterval)
 

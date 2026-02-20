@@ -52,6 +52,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot
 - 🤖 **Bot 交互命令** - 通过 Telegram 命令随时查询扣费、流量和实例状态
 - 🌐 **共享带宽管理** - 通过 Telegram 按钮交互，将实例 EIP 加入或移出共享带宽包
 - 🚨 **流量超额自动关机** - 中国大陆/非中国大陆流量分别设置阈值，超额自动停机并通知
+- ☁️ **GCP Credits 监控** - 查询 GCP $300 免费试用额度使用情况，余额不足时自动告警
 
 ## 快速开始
 
@@ -214,6 +215,12 @@ docker run -d --name aliyun-spot \
 | `TRAFFIC_LIMIT_CHINA_GB` | ❌ | `19` | 中国大陆流量阈值（GB） |
 | `TRAFFIC_LIMIT_NON_CHINA_GB` | ❌ | `195` | 非中国大陆流量阈值（GB） |
 | `TRAFFIC_CHECK_INTERVAL` | ❌ | `300` | 流量检查间隔（秒） |
+| `GCP_CREDITS_ENABLED` | ❌ | `false` | 是否启用 GCP Credits 监控 |
+| `GCP_SERVICE_ACCOUNT_JSON` | ❌* | - | GCP Service Account JSON 密钥 |
+| `GCP_BILLING_ACCOUNT_ID` | ❌* | - | GCP Billing Account ID |
+| `GCP_CREDITS_TOTAL` | ❌ | `300` | Credits 总额（美元） |
+| `GCP_CREDITS_ALERT_PERCENT` | ❌ | `5` | 剩余百分比告警阈值 |
+| `GCP_CREDITS_CHECK_INTERVAL` | ❌ | `3600` | Credits 检查间隔（秒） |
 
 *当 `TELEGRAM_ENABLED=true` 时必填
 
@@ -231,6 +238,12 @@ docker run -d --name aliyun-spot \
 - `vpc:AddCommonBandwidthPackageIp` - 将 EIP 加入共享带宽包
 - `vpc:RemoveCommonBandwidthPackageIp` - 将 EIP 移出共享带宽包
 - 或直接授予 `AliyunVPCFullAccess` 策略
+
+**注意：** 使用 GCP Credits 监控功能需要：
+- 创建 GCP Service Account 并授予 `Billing Account Viewer` 角色
+- [启用 Cloud Billing API](https://console.cloud.google.com/apis/api/cloudbilling.googleapis.com)
+- 将 Service Account JSON 密钥文件路径填入 `GCP_SERVICE_ACCOUNT_JSON`
+- 在 [Billing Account 管理页面](https://console.cloud.google.com/billing) 给 Service Account 添加 `Billing Account Viewer` 权限
 
 ## 通知示例
 
@@ -376,11 +389,13 @@ ID: i-xxx123
 | `/traffic` | 查询本月流量统计 |
 | `/status` | 查看所有实例状态 |
 | `/cbwp` | 管理共享带宽包（加入/移出） |
+| `/gcpcredits` | 查询 GCP Credits 余额 |
 | `/help` | 显示帮助信息 |
 
 **命令别名：**
 - `/cost`、`/fee` - 查询扣费
 - `/flow`、`/bandwidth` - 查询流量
+- `/credits`、`/gcp` - 查询 GCP Credits
 
 **注意：** Bot 只会响应配置的 `TELEGRAM_CHAT_ID` 发来的消息，其他聊天会被忽略。
 

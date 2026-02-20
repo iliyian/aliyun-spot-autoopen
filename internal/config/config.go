@@ -39,6 +39,14 @@ type Config struct {
 	TrafficLimitNonChinaGB float64 // Non-China traffic limit in GB
 	TrafficCheckInterval   int     // seconds
 
+	// GCP Credits monitoring
+	GCPCreditsEnabled       bool
+	GCPServiceAccountJSON   string
+	GCPBillingAccountID     string
+	GCPCreditsTotal         float64
+	GCPCreditsAlertPercent  float64
+	GCPCreditsCheckInterval int // seconds
+
 	// Logging
 	LogLevel string
 	LogFile  string
@@ -76,6 +84,14 @@ func Load() (*Config, error) {
 		TrafficLimitChinaGB:    getEnvFloat64("TRAFFIC_LIMIT_CHINA_GB", 19),
 		TrafficLimitNonChinaGB: getEnvFloat64("TRAFFIC_LIMIT_NON_CHINA_GB", 195),
 		TrafficCheckInterval:   getEnvInt("TRAFFIC_CHECK_INTERVAL", 300),
+
+		// GCP Credits monitoring
+		GCPCreditsEnabled:       getEnvBool("GCP_CREDITS_ENABLED", false),
+		GCPServiceAccountJSON:   os.Getenv("GCP_SERVICE_ACCOUNT_JSON"),
+		GCPBillingAccountID:     os.Getenv("GCP_BILLING_ACCOUNT_ID"),
+		GCPCreditsTotal:         getEnvFloat64("GCP_CREDITS_TOTAL", 300),
+		GCPCreditsAlertPercent:  getEnvFloat64("GCP_CREDITS_ALERT_PERCENT", 5),
+		GCPCreditsCheckInterval: getEnvInt("GCP_CREDITS_CHECK_INTERVAL", 3600),
 
 		// Logging
 		LogLevel: getEnvString("LOG_LEVEL", "info"),

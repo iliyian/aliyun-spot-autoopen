@@ -8,6 +8,7 @@ import (
 
 	"github.com/iliyian/aliyun-spot-manager/internal/aliyun"
 	"github.com/iliyian/aliyun-spot-manager/internal/config"
+	"github.com/iliyian/aliyun-spot-manager/internal/gcp"
 	"github.com/iliyian/aliyun-spot-manager/internal/notify"
 	log "github.com/sirupsen/logrus"
 )
@@ -19,6 +20,7 @@ type Monitor struct {
 	billingClient *aliyun.BillingClient
 	trafficClient *aliyun.TrafficClient
 	cbwpClient    *aliyun.CBWPClient
+	gcpBilling    *gcp.BillingClient
 	notifier      *notify.TelegramNotifier
 	botHandler    *notify.BotHandler
 
@@ -73,6 +75,16 @@ func New(cfg *config.Config) (*Monitor, error) {
 		m.cbwpClient = aliyun.NewCBWPClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret)
 	}
 
+	// Initialize GCP billing client
+	if cfg.GCPCreditsEnabled {
+		gcpClient, err := gcp.NewBillingClient(cfg.GCPServiceAccountJSON, cfg.GCPBillingAccountID)
+		if err != nil {
+			log.Warnf("Failed to create GCP billing client: %v", err)
+		} else {
+			m.gcpBilling = gcpClient
+		}
+	}
+
 	// Initialize bot handler for commands
 	if cfg.TelegramEnabled {
 		m.botHandler = notify.NewBotHandler(cfg.TelegramBotToken, cfg.TelegramChatID)
@@ -101,6 +113,8 @@ func (m *Monitor) handleBotCommand(command string) error {
 		return m.sendStatusReport()
 	case "cbwp":
 		return m.sendCBWPInstanceList()
+	case "gcpcredits", "credits", "gcp":
+		return m.SendGCPCreditsReport()
 	case "help":
 		return m.sendHelpMessage()
 	default:
@@ -163,10 +177,11 @@ func (m *Monitor) sendHelpMessage() error {
 /traffic - 查询本月流量统计
 /status - 查看实例状态
 /cbwp - 管理共享带宽包
+/gcpcredits - 查询GCP Credits余额
 /help - 显示帮助信息
 
 ━━━━━━━━━━━━━━━━
-<i>别名: /cost, /fee, /flow, /bandwidth</i>`
+<i>别名: /cost, /fee, /flow, /bandwidth, /credits, /gcp</i>`
 
 	return m.notifier.Send(message)
 }
@@ -911,4 +926,46 @@ func (m *Monitor) handleCBWPBackToList(messageID int64) error {
 
 	text := "🌐 <b>共享带宽管理</b>\n━━━━━━━━━━━━━━━━\n\n请选择要操作的实例："
 	return m.botHandler.EditMessageText(messageID, text, keyboard)
+}
+
+// SendGCPCreditsReport sends a GCP credits report via Telegram
+func (m *Monitor) SendGCPCreditsReport() error {
+	if m.gcpBilling == nil {
+		return fmt.Errorf("GCP billing client not initialized")
+	}
+	if m.notifier == nil {
+		return fmt.Errorf("telegram notifier not initialized")
+	}
+
+	summary, err := m.gcpBilling.QueryCostSummary(m.cfg.GCPCreditsTotal)
+	if err != nil {
+		return fmt.Errorf("failed to query GCP costs: %w", err)
+	}
+
+	return m.notifier.NotifyGCPCreditsSummary(summary)
+}
+
+// CheckGCPCredits checks GCP credits and sends alert if below threshold
+func (m *Monitor) CheckGCPCredits() error {
+	if m.gcpBilling == nil {
+		return nil
+	}
+
+	summary, err := m.gcpBilling.QueryCostSummary(m.cfg.GCPCreditsTotal)
+	if err != nil {
+		return fmt.Errorf("failed to query GCP costs: %w", err)
+	}
+
+	log.Debugf("GCP credits: $%.2f remaining (%.1f%%)", summary.RemainingAmount, summary.RemainingPct)
+
+	if summary.RemainingPct <= m.cfg.GCPCreditsAlertPercent && m.notifier != nil {
+		if m.canNotify("gcp-credits") {
+			if err := m.notifier.NotifyGCPCreditsLow(summary, m.cfg.GCPCreditsAlertPercent); err != nil {
+				return err
+			}
+			m.updateNotifyTime("gcp-credits")
+		}
+	}
+
+	return nil
 }

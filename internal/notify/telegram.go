@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iliyian/aliyun-spot-manager/internal/aliyun"
+	"github.com/iliyian/aliyun-spot-manager/internal/gcp"
 )
 
 // TelegramNotifier sends notifications via Telegram
@@ -449,4 +450,34 @@ func (t *TelegramNotifier) NotifyTrafficSummaryWithLimits(summary *aliyun.Traffi
 	}
 
 	return t.Send(sb.String())
+}
+
+// NotifyGCPCreditsSummary sends a GCP credits status report
+func (t *TelegramNotifier) NotifyGCPCreditsSummary(summary *gcp.CreditsSummary) error {
+	msg := fmt.Sprintf(`☁️ <b>GCP Credits 状态</b>
+━━━━━━━━━━━━━━━━
+💳 总额度: $%.2f
+💸 已使用: $%.2f
+💰 剩余: $%.2f (%.1f%%)
+📅 查询时间: %s
+━━━━━━━━━━━━━━━━`,
+		summary.TotalCredits, summary.UsedAmount,
+		summary.RemainingAmount, summary.RemainingPct,
+		summary.QueryTime.Format("2006-01-02 15:04"))
+	return t.Send(msg)
+}
+
+// NotifyGCPCreditsLow sends a GCP credits low alert
+func (t *TelegramNotifier) NotifyGCPCreditsLow(summary *gcp.CreditsSummary, threshold float64) error {
+	msg := fmt.Sprintf(`⚠️ <b>GCP Credits 即将用尽</b>
+━━━━━━━━━━━━━━━━
+💳 总额度: $%.2f
+💸 已使用: $%.2f
+💰 剩余: $%.2f (%.1f%%)
+🚨 低于 %.0f%% 告警阈值
+━━━━━━━━━━━━━━━━
+请及时关注！`,
+		summary.TotalCredits, summary.UsedAmount,
+		summary.RemainingAmount, summary.RemainingPct, threshold)
+	return t.Send(msg)
 }
