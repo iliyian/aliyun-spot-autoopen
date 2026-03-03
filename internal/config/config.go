@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all configuration for the application
@@ -11,6 +12,12 @@ type Config struct {
 	// Aliyun credentials
 	AliyunAccessKeyID     string
 	AliyunAccessKeySecret string
+
+	// GCP settings
+	GCPEnabled         bool
+	GCPProjectID       string   // optional, empty = auto-discover all projects
+	GCPCredentialsJSON string   // service account JSON content
+	GCPZones           []string // specific zones to monitor, empty = auto-discover
 
 	// Telegram settings
 	TelegramEnabled  bool
@@ -51,6 +58,11 @@ func Load() (*Config, error) {
 		AliyunAccessKeyID:     os.Getenv("ALIYUN_ACCESS_KEY_ID"),
 		AliyunAccessKeySecret: os.Getenv("ALIYUN_ACCESS_KEY_SECRET"),
 
+		// GCP
+		GCPEnabled:         getEnvBool("GCP_ENABLED", false),
+		GCPProjectID:       os.Getenv("GCP_PROJECT_ID"),
+		GCPCredentialsJSON: os.Getenv("GCP_CREDENTIALS_JSON"),
+
 		// Telegram
 		TelegramEnabled:  getEnvBool("TELEGRAM_ENABLED", true),
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
@@ -85,12 +97,28 @@ func Load() (*Config, error) {
 	// Generate cron schedule from check interval
 	cfg.CronSchedule = fmt.Sprintf("@every %ds", cfg.CheckInterval)
 
-	// Validate required fields
-	if cfg.AliyunAccessKeyID == "" {
-		return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_ID is required")
+	// Parse GCP zones
+	if zonesStr := os.Getenv("GCP_ZONES"); zonesStr != "" {
+		for _, z := range strings.Split(zonesStr, ",") {
+			z = strings.TrimSpace(z)
+			if z != "" {
+				cfg.GCPZones = append(cfg.GCPZones, z)
+			}
+		}
 	}
-	if cfg.AliyunAccessKeySecret == "" {
-		return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_SECRET is required")
+
+	// Validate required fields - Aliyun is optional when GCP is enabled
+	if !cfg.GCPEnabled {
+		if cfg.AliyunAccessKeyID == "" {
+			return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_ID is required")
+		}
+		if cfg.AliyunAccessKeySecret == "" {
+			return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_SECRET is required")
+		}
+	} else {
+		if cfg.GCPProjectID == "" {
+			return nil, fmt.Errorf("GCP_PROJECT_ID is required when GCP is enabled")
+		}
 	}
 
 	if cfg.TelegramEnabled {

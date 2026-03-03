@@ -1,6 +1,6 @@
 # Aliyun Spot Instance Manager
 
-阿里云抢占式实例自动检测和开机工具。自动监控所有区域的抢占式实例，当实例被回收（停止）时自动重新启动，并通过 Telegram 发送通知。
+阿里云抢占式实例 & GCP 抢占式实例自动检测和开机工具。自动监控所有区域的抢占式实例，当实例被回收（停止）时自动重新启动，并通过 Telegram 发送通知。
 
 ## 🚀 一键安装
 
@@ -52,6 +52,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/iliyian/aliyun-spot
 - 🤖 **Bot 交互命令** - 通过 Telegram 命令随时查询扣费、流量和实例状态
 - 🌐 **共享带宽管理** - 通过 Telegram 按钮交互，将实例 EIP 加入或移出共享带宽包
 - 🚨 **流量超额自动关机** - 中国大陆/非中国大陆流量分别设置阈值，超额自动停机并通知
+- ☁️ **GCP 抢占式实例** - 支持 GCP Preemptible/Spot VM 自动发现和重启
 
 ## 快速开始
 
@@ -214,8 +215,14 @@ docker run -d --name aliyun-spot \
 | `TRAFFIC_LIMIT_CHINA_GB` | ❌ | `19` | 中国大陆流量阈值（GB） |
 | `TRAFFIC_LIMIT_NON_CHINA_GB` | ❌ | `195` | 非中国大陆流量阈值（GB） |
 | `TRAFFIC_CHECK_INTERVAL` | ❌ | `300` | 流量检查间隔（秒） |
+| `GCP_ENABLED` | ❌ | `false` | 是否启用 GCP 抢占式实例监控 |
+| `GCP_PROJECT_ID` | ✅** | - | GCP 项目 ID |
+| `GCP_CREDENTIALS_JSON` | ❌ | - | GCP 服务账号密钥 JSON 内容（留空使用 ADC） |
+| `GCP_ZONES` | ❌ | - | GCP 监控区域，逗号分隔（留空自动发现） |
 
 *当 `TELEGRAM_ENABLED=true` 时必填
+
+**当 `GCP_ENABLED=true` 时必填
 
 **注意：** 使用扣费查询功能需要 AccessKey 具有 BSS（费用中心）API 权限：
 - `bss:QueryInstanceBill` - 查询实例账单
@@ -231,6 +238,48 @@ docker run -d --name aliyun-spot \
 - `vpc:AddCommonBandwidthPackageIp` - 将 EIP 加入共享带宽包
 - `vpc:RemoveCommonBandwidthPackageIp` - 将 EIP 移出共享带宽包
 - 或直接授予 `AliyunVPCFullAccess` 策略
+
+### GCP 抢占式实例配置
+
+启用 GCP 监控后，程序会自动扫描指定项目中的所有 Preemptible/Spot VM，当实例被抢占（状态变为 TERMINATED/STOPPED）时自动重启。
+
+**1. 创建服务账号并获取密钥 JSON：**
+
+```bash
+# 创建服务账号
+gcloud iam service-accounts create spot-manager \
+  --display-name="Spot Instance Manager"
+
+# 授予 Compute 实例管理权限
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:spot-manager@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/compute.instanceAdmin.v1"
+
+# 生成密钥 JSON
+gcloud iam service-accounts keys create key.json \
+  --iam-account=spot-manager@YOUR_PROJECT_ID.iam.gserviceaccount.com
+
+# 将 JSON 内容设置到环境变量（单行）
+cat key.json | jq -c .
+```
+
+**2. 配置环境变量：**
+
+```bash
+GCP_ENABLED=true
+GCP_PROJECT_ID=your-project-id
+GCP_CREDENTIALS_JSON={"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}
+# 可选：指定监控区域，留空自动发现所有区域
+GCP_ZONES=us-central1-a,asia-east1-b
+```
+
+**所需 GCP 权限：**
+- `compute.instances.list` - 列出实例
+- `compute.instances.get` - 获取实例状态
+- `compute.instances.start` - 启动实例
+- `compute.instances.stop` - 停止实例
+- `compute.zones.list` - 列出可用区
+- 或直接授予 `roles/compute.instanceAdmin.v1` 角色
 
 ## 通知示例
 

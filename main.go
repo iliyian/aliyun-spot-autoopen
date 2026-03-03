@@ -42,6 +42,10 @@ func main() {
 		log.Fatalf("Failed to discover instances: %v", err)
 	}
 
+	if cfg.GCPEnabled {
+		log.Info("GCP preemptible instance monitoring enabled")
+	}
+
 	// Start Telegram bot for commands
 	mon.StartBot()
 

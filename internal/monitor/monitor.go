@@ -8,6 +8,7 @@ import (
 
 	"github.com/iliyian/aliyun-spot-manager/internal/aliyun"
 	"github.com/iliyian/aliyun-spot-manager/internal/config"
+	"github.com/iliyian/aliyun-spot-manager/internal/gcp"
 	"github.com/iliyian/aliyun-spot-manager/internal/notify"
 	log "github.com/sirupsen/logrus"
 )
@@ -19,12 +20,14 @@ type Monitor struct {
 	billingClient *aliyun.BillingClient
 	trafficClient *aliyun.TrafficClient
 	cbwpClient    *aliyun.CBWPClient
+	gcpClient     *gcp.ComputeClient
 	notifier      *notify.TelegramNotifier
 	botHandler    *notify.BotHandler
 
 	// Tracked instances
-	instances []*aliyun.SpotInstance
-	mu        sync.RWMutex
+	instances    []*aliyun.SpotInstance
+	gcpInstances []*gcp.PreemptibleInstance
+	mu           sync.RWMutex
 
 	// Notification cooldown tracking
 	lastNotify   map[string]time.Time
@@ -40,8 +43,12 @@ type Monitor struct {
 func New(cfg *config.Config) (*Monitor, error) {
 	m := &Monitor{
 		cfg:        cfg,
-		ecsClient:  aliyun.NewECSClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret),
 		lastNotify: make(map[string]time.Time),
+	}
+
+	// Initialize Aliyun ECS client (optional when GCP-only)
+	if cfg.AliyunAccessKeyID != "" && cfg.AliyunAccessKeySecret != "" {
+		m.ecsClient = aliyun.NewECSClient(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret)
 	}
 
 	if cfg.TelegramEnabled {
@@ -78,6 +85,15 @@ func New(cfg *config.Config) (*Monitor, error) {
 		m.botHandler = notify.NewBotHandler(cfg.TelegramBotToken, cfg.TelegramChatID)
 		m.botHandler.SetCommandHandler(m.handleBotCommand)
 		m.botHandler.SetCallbackHandler(m.handleCallbackQuery)
+	}
+
+	// Initialize GCP client
+	if cfg.GCPEnabled {
+		gcpClient, err := gcp.NewComputeClient(cfg.GCPProjectID, cfg.GCPCredentialsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCP client: %w", err)
+		}
+		m.gcpClient = gcpClient
 	}
 
 	return m, nil
@@ -118,9 +134,11 @@ func (m *Monitor) sendStatusReport() error {
 	m.mu.RLock()
 	instances := make([]*aliyun.SpotInstance, len(m.instances))
 	copy(instances, m.instances)
+	gcpInstances := make([]*gcp.PreemptibleInstance, len(m.gcpInstances))
+	copy(gcpInstances, m.gcpInstances)
 	m.mu.RUnlock()
 
-	if len(instances) == 0 {
+	if len(instances) == 0 && len(gcpInstances) == 0 {
 		return m.notifier.Send("📊 <b>实例状态</b>\n\n暂无监控的实例")
 	}
 
@@ -144,6 +162,28 @@ func (m *Monitor) sendStatusReport() error {
 		sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n", statusEmoji, inst.InstanceName))
 		sb.WriteString(fmt.Sprintf("   ID: <code>%s</code>\n", inst.InstanceID))
 		sb.WriteString(fmt.Sprintf("   区域: %s\n", inst.RegionID))
+		sb.WriteString(fmt.Sprintf("   状态: %s\n\n", status))
+	}
+
+	// GCP instances
+	for _, inst := range gcpInstances {
+		status, err := m.gcpClient.GetInstanceStatus(inst.Zone, inst.InstanceName)
+		if err != nil {
+			status = "Unknown"
+		}
+
+		statusEmoji := "🟢"
+		switch status {
+		case "TERMINATED", "STOPPED":
+			statusEmoji = "🔴"
+		case "STAGING", "STOPPING", "SUSPENDING":
+			statusEmoji = "🟡"
+		case "SUSPENDED":
+			statusEmoji = "🟠"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s <b>[GCP] %s</b>\n", statusEmoji, inst.InstanceName))
+		sb.WriteString(fmt.Sprintf("   区域: %s\n", inst.Zone))
 		sb.WriteString(fmt.Sprintf("   状态: %s\n\n", status))
 	}
 
@@ -174,44 +214,90 @@ func (m *Monitor) sendHelpMessage() error {
 // refreshInstances re-discovers spot instances and updates the tracked list.
 // It logs additions and removals but does not send startup notifications.
 func (m *Monitor) refreshInstances() error {
-	instances, err := m.ecsClient.DiscoverAllSpotInstances()
-	if err != nil {
-		return fmt.Errorf("failed to discover instances: %w", err)
-	}
-
-	m.mu.Lock()
-	oldMap := make(map[string]bool, len(m.instances))
-	for _, inst := range m.instances {
-		oldMap[inst.InstanceID] = true
-	}
-	newMap := make(map[string]bool, len(instances))
-	for _, inst := range instances {
-		newMap[inst.InstanceID] = true
-	}
-
-	// Log changes
-	for _, inst := range instances {
-		if !oldMap[inst.InstanceID] {
-			log.Infof("New instance discovered: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+	if m.ecsClient != nil {
+		instances, err := m.ecsClient.DiscoverAllSpotInstances()
+		if err != nil {
+			return fmt.Errorf("failed to discover instances: %w", err)
 		}
-	}
-	for _, inst := range m.instances {
-		if !newMap[inst.InstanceID] {
-			log.Infof("Instance removed: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+
+		m.mu.Lock()
+		oldMap := make(map[string]bool, len(m.instances))
+		for _, inst := range m.instances {
+			oldMap[inst.InstanceID] = true
 		}
+		newMap := make(map[string]bool, len(instances))
+		for _, inst := range instances {
+			newMap[inst.InstanceID] = true
+		}
+
+		for _, inst := range instances {
+			if !oldMap[inst.InstanceID] {
+				log.Infof("New instance discovered: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+			}
+		}
+		for _, inst := range m.instances {
+			if !newMap[inst.InstanceID] {
+				log.Infof("Instance removed: %s (%s) in %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+			}
+		}
+
+		m.instances = instances
+		m.mu.Unlock()
 	}
 
-	m.instances = instances
-	m.mu.Unlock()
+	// Refresh GCP instances
+	if m.gcpClient != nil {
+		m.refreshGCPInstances()
+	}
 
 	return nil
 }
 
+// refreshGCPInstances re-discovers GCP preemptible instances
+func (m *Monitor) refreshGCPInstances() {
+	gcpInstances, err := m.gcpClient.DiscoverAllPreemptibleInstances(m.cfg.GCPZones)
+	if err != nil {
+		log.Warnf("Failed to refresh GCP instances: %v", err)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	oldMap := make(map[string]bool, len(m.gcpInstances))
+	for _, inst := range m.gcpInstances {
+		oldMap[inst.Zone+"/"+inst.InstanceName] = true
+	}
+	newMap := make(map[string]bool, len(gcpInstances))
+	for _, inst := range gcpInstances {
+		newMap[inst.Zone+"/"+inst.InstanceName] = true
+	}
+
+	for _, inst := range gcpInstances {
+		key := inst.Zone + "/" + inst.InstanceName
+		if !oldMap[key] {
+			log.Infof("GCP: New instance discovered: %s in %s", inst.InstanceName, inst.Zone)
+		}
+	}
+	for _, inst := range m.gcpInstances {
+		key := inst.Zone + "/" + inst.InstanceName
+		if !newMap[key] {
+			log.Infof("GCP: Instance removed: %s in %s", inst.InstanceName, inst.Zone)
+		}
+	}
+
+	m.gcpInstances = gcpInstances
+}
+
 // DiscoverInstances discovers all spot instances across all regions
 func (m *Monitor) DiscoverInstances() error {
-	instances, err := m.ecsClient.DiscoverAllSpotInstances()
-	if err != nil {
-		return fmt.Errorf("failed to discover instances: %w", err)
+	var instances []*aliyun.SpotInstance
+	if m.ecsClient != nil {
+		var err error
+		instances, err = m.ecsClient.DiscoverAllSpotInstances()
+		if err != nil {
+			return fmt.Errorf("failed to discover instances: %w", err)
+		}
 	}
 
 	m.mu.Lock()
@@ -223,14 +309,44 @@ func (m *Monitor) DiscoverInstances() error {
 		log.Infof("  - %s (%s) in %s [%s]", inst.InstanceName, inst.InstanceID, inst.RegionID, inst.Status)
 	}
 
-	// Send notification
-	if m.notifier != nil && len(instances) > 0 {
-		instanceList := make([]string, len(instances))
-		for i, inst := range instances {
-			instanceList[i] = fmt.Sprintf("%s (%s) - %s", inst.InstanceName, inst.InstanceID, inst.RegionID)
+	// Discover GCP instances
+	if m.gcpClient != nil {
+		gcpInstances, err := m.gcpClient.DiscoverAllPreemptibleInstances(m.cfg.GCPZones)
+		if err != nil {
+			log.Warnf("Failed to discover GCP instances: %v", err)
+		} else {
+			m.mu.Lock()
+			m.gcpInstances = gcpInstances
+			m.mu.Unlock()
+
+			log.Infof("Discovered %d GCP preemptible instances", len(gcpInstances))
+			for _, inst := range gcpInstances {
+				log.Infof("  - %s in %s [%s]", inst.InstanceName, inst.Zone, inst.Status)
+			}
 		}
-		if err := m.notifier.NotifyMonitorStarted(len(instances), instanceList); err != nil {
-			log.Warnf("Failed to send monitor started notification: %v", err)
+	}
+
+	// Send notification
+	if m.notifier != nil {
+		totalCount := len(instances)
+		instanceList := make([]string, 0)
+		for _, inst := range instances {
+			instanceList = append(instanceList, fmt.Sprintf("%s (%s) - %s", inst.InstanceName, inst.InstanceID, inst.RegionID))
+		}
+
+		m.mu.RLock()
+		gcpInsts := m.gcpInstances
+		m.mu.RUnlock()
+
+		for _, inst := range gcpInsts {
+			totalCount++
+			instanceList = append(instanceList, fmt.Sprintf("[GCP] %s - %s", inst.InstanceName, inst.Zone))
+		}
+
+		if totalCount > 0 {
+			if err := m.notifier.NotifyMonitorStarted(totalCount, instanceList); err != nil {
+				log.Warnf("Failed to send monitor started notification: %v", err)
+			}
 		}
 	}
 
@@ -247,11 +363,20 @@ func (m *Monitor) Check() error {
 	m.mu.RLock()
 	instances := make([]*aliyun.SpotInstance, len(m.instances))
 	copy(instances, m.instances)
+	gcpInstances := make([]*gcp.PreemptibleInstance, len(m.gcpInstances))
+	copy(gcpInstances, m.gcpInstances)
 	m.mu.RUnlock()
 
 	for _, inst := range instances {
 		if err := m.checkInstance(inst); err != nil {
 			log.Errorf("Failed to check instance %s: %v", inst.InstanceID, err)
+		}
+	}
+
+	// Check GCP instances
+	for _, inst := range gcpInstances {
+		if err := m.checkGCPInstance(inst); err != nil {
+			log.Errorf("Failed to check GCP instance %s: %v", inst.InstanceName, err)
 		}
 	}
 
@@ -376,6 +501,114 @@ func (m *Monitor) waitForRunning(regionID, instanceID string) error {
 				return nil
 			}
 			log.Debugf("Instance %s status: %s, waiting...", instanceID, status)
+		}
+	}
+}
+
+// checkGCPInstance checks a single GCP instance and starts it if stopped/terminated
+func (m *Monitor) checkGCPInstance(inst *gcp.PreemptibleInstance) error {
+	// Get current status
+	status, err := m.gcpClient.GetInstanceStatus(inst.Zone, inst.InstanceName)
+	if err != nil {
+		return fmt.Errorf("failed to get GCP instance status: %w", err)
+	}
+
+	log.Debugf("GCP instance %s (%s) status: %s", inst.InstanceName, inst.Zone, status)
+
+	// Only handle stopped/terminated instances
+	if status != "TERMINATED" && status != "STOPPED" {
+		return nil
+	}
+
+	log.Warnf("GCP instance %s (%s) is %s, attempting to start", inst.InstanceName, inst.Zone, status)
+
+	// Notification key uses "gcp:" prefix to avoid collision with Aliyun instance IDs
+	notifyKey := "gcp:" + inst.Zone + "/" + inst.InstanceName
+
+	if !m.canNotify(notifyKey) {
+		log.Debugf("Notification cooldown active for GCP instance %s", inst.InstanceName)
+	} else {
+		if m.notifier != nil {
+			if err := m.notifier.NotifyInstanceReclaimed(inst.InstanceName, inst.InstanceName, "GCP/"+inst.Zone); err != nil {
+				log.Warnf("Failed to send GCP reclaimed notification: %v", err)
+			}
+		}
+		m.updateNotifyTime(notifyKey)
+	}
+
+	// Try to start the instance with retries
+	startTime := time.Now()
+	var lastErr error
+	for i := 0; i < m.cfg.RetryCount; i++ {
+		if i > 0 {
+			log.Infof("GCP: Retry %d/%d for instance %s", i+1, m.cfg.RetryCount, inst.InstanceName)
+			time.Sleep(time.Duration(m.cfg.RetryInterval) * time.Second)
+		}
+
+		if err := m.gcpClient.StartInstance(inst.Zone, inst.InstanceName); err != nil {
+			lastErr = err
+			log.Warnf("Failed to start GCP instance %s (attempt %d): %v", inst.InstanceName, i+1, err)
+			continue
+		}
+
+		// Wait for instance to be running
+		if err := m.waitForGCPRunning(inst.Zone, inst.InstanceName); err != nil {
+			lastErr = err
+			log.Warnf("GCP instance %s did not reach running state: %v", inst.InstanceName, err)
+			continue
+		}
+
+		// Get updated instance info
+		updatedInst, err := m.gcpClient.GetInstance(inst.Zone, inst.InstanceName)
+		if err != nil {
+			log.Warnf("Failed to get updated GCP instance info: %v", err)
+		} else {
+			inst = updatedInst
+		}
+
+		duration := time.Since(startTime)
+		log.Infof("GCP instance %s started successfully in %.0f seconds", inst.InstanceName, duration.Seconds())
+
+		if m.notifier != nil {
+			if err := m.notifier.NotifyInstanceStarted(inst.InstanceName, inst.InstanceName, "GCP/"+inst.Zone, inst.ExternalIP, duration); err != nil {
+				log.Warnf("Failed to send GCP started notification: %v", err)
+			}
+		}
+
+		return nil
+	}
+
+	// All retries failed
+	log.Errorf("Failed to start GCP instance %s after %d retries", inst.InstanceName, m.cfg.RetryCount)
+	if m.notifier != nil {
+		if err := m.notifier.NotifyInstanceStartFailed(inst.InstanceName, inst.InstanceName, "GCP/"+inst.Zone, m.cfg.RetryCount, lastErr); err != nil {
+			log.Warnf("Failed to send GCP failure notification: %v", err)
+		}
+	}
+
+	return lastErr
+}
+
+// waitForGCPRunning waits for a GCP instance to reach RUNNING state
+func (m *Monitor) waitForGCPRunning(zone, instanceName string) error {
+	timeout := time.After(2 * time.Minute)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timeout waiting for GCP instance to start")
+		case <-ticker.C:
+			status, err := m.gcpClient.GetInstanceStatus(zone, instanceName)
+			if err != nil {
+				log.Warnf("Failed to get GCP instance status: %v", err)
+				continue
+			}
+			if status == "RUNNING" {
+				return nil
+			}
+			log.Debugf("GCP instance %s status: %s, waiting...", instanceName, status)
 		}
 	}
 }
