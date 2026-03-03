@@ -217,7 +217,8 @@ docker run -d --name aliyun-spot \
 | `TRAFFIC_CHECK_INTERVAL` | ❌ | `300` | 流量检查间隔（秒） |
 | `GCP_ENABLED` | ❌ | `false` | 是否启用 GCP 抢占式实例监控 |
 | `GCP_PROJECT_ID` | ✅** | - | GCP 项目 ID |
-| `GCP_CREDENTIALS_JSON` | ❌ | - | GCP 服务账号密钥 JSON 内容（留空使用 ADC） |
+| `GCP_CREDENTIALS_FILE` | ❌ | - | GCP 服务账号密钥文件路径（**systemd 下推荐**） |
+| `GCP_CREDENTIALS_JSON` | ❌ | - | GCP 服务账号密钥 JSON 内容（留空使用 ADC；systemd 下不推荐） |
 | `GCP_ZONES` | ❌ | - | GCP 监控区域，逗号分隔（留空自动发现） |
 
 *当 `TELEGRAM_ENABLED=true` 时必填
@@ -243,7 +244,7 @@ docker run -d --name aliyun-spot \
 
 启用 GCP 监控后，程序会自动扫描指定项目中的所有 Preemptible/Spot VM，当实例被抢占（状态变为 TERMINATED/STOPPED）时自动重启。
 
-**1. 创建服务账号并获取密钥 JSON：**
+**1. 在 Cloud Shell 中创建服务账号并获取密钥 JSON：**
 
 ```bash
 # 创建服务账号
@@ -255,23 +256,33 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --member="serviceAccount:spot-manager@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/compute.instanceAdmin.v1"
 
-# 生成密钥 JSON
-gcloud iam service-accounts keys create key.json \
+# 生成密钥 JSON 并输出到控制台
+gcloud iam service-accounts keys create /dev/stdout \
   --iam-account=spot-manager@YOUR_PROJECT_ID.iam.gserviceaccount.com
-
-# 将 JSON 内容设置到环境变量（单行）
-cat key.json | jq -c .
 ```
 
-**2. 配置环境变量：**
+复制输出的 JSON，在实际服务器上保存为文件：
+
+```bash
+# 在实际服务器上
+cat > /opt/aliyun-spot-manager/gcp-credentials.json << 'EOF'
+{粘贴刚才复制的 JSON}
+EOF
+chmod 600 /opt/aliyun-spot-manager/gcp-credentials.json
+```
+
+**2. 配置环境变量（systemd 下推荐使用文件路径）：**
 
 ```bash
 GCP_ENABLED=true
 GCP_PROJECT_ID=your-project-id
-GCP_CREDENTIALS_JSON={"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}
+# 推荐：指定密钥文件路径（systemd EnvironmentFile 不支持 JSON 多行值）
+GCP_CREDENTIALS_FILE=/opt/aliyun-spot-manager/gcp-credentials.json
 # 可选：指定监控区域，留空自动发现所有区域
 GCP_ZONES=us-central1-a,asia-east1-b
 ```
+
+> **注意：** 使用 systemd 管理服务时，请用 `GCP_CREDENTIALS_FILE` 指定密钥文件路径，而不是将 JSON 内容写入 `GCP_CREDENTIALS_JSON`。systemd 的 `EnvironmentFile` 解析器不支持包含特殊字符的多行 JSON 值，会导致私钥解析失败。
 
 **所需 GCP 权限：**
 - `compute.instances.list` - 列出实例
