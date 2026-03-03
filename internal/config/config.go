@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 		// GCP
 		GCPEnabled:         getEnvBool("GCP_ENABLED", false),
 		GCPProjectID:       os.Getenv("GCP_PROJECT_ID"),
-		GCPCredentialsJSON: os.Getenv("GCP_CREDENTIALS_JSON"),
+		GCPCredentialsJSON: strings.ReplaceAll(os.Getenv("GCP_CREDENTIALS_JSON"), `\n`, "\n"),
 
 		// Telegram
 		TelegramEnabled:  getEnvBool("TELEGRAM_ENABLED", true),
