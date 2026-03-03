@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 		// GCP
 		GCPEnabled:         getEnvBool("GCP_ENABLED", false),
 		GCPProjectID:       os.Getenv("GCP_PROJECT_ID"),
-		GCPCredentialsJSON: strings.ReplaceAll(os.Getenv("GCP_CREDENTIALS_JSON"), `\n`, "\n"),
+		GCPCredentialsJSON: loadGCPCredentials(),
 
 		// Telegram
 		TelegramEnabled:  getEnvBool("TELEGRAM_ENABLED", true),
@@ -165,4 +165,19 @@ func getEnvFloat64(key string, defaultValue float64) float64 {
 		}
 	}
 	return defaultValue
+}
+
+// loadGCPCredentials loads GCP service account JSON from file (GCP_CREDENTIALS_FILE)
+// or falls back to the inline env var (GCP_CREDENTIALS_JSON), unescaping \n in the latter.
+// Using a file is strongly recommended when running under systemd, because
+// systemd's EnvironmentFile parser does not support multi-line values or JSON.
+func loadGCPCredentials() string {
+	if filePath := os.Getenv("GCP_CREDENTIALS_FILE"); filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err == nil {
+			return string(data)
+		}
+	}
+	// Fall back to inline JSON, replacing literal \n with real newlines
+	return strings.ReplaceAll(os.Getenv("GCP_CREDENTIALS_JSON"), `\n`, "\n")
 }
