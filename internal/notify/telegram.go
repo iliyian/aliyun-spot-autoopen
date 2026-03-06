@@ -131,6 +131,24 @@ ID: <code>%s</code>
 	return t.Send(message)
 }
 
+// NotifyInstanceNoStock sends a notification when an instance cannot start due to resource sold out
+func (t *TelegramNotifier) NotifyInstanceNoStock(instanceID, instanceName, region string, attempts int) error {
+	message := fmt.Sprintf(`🚫 <b>资源售罄 - 已暂停自动重启</b>
+━━━━━━━━━━━━━━━
+实例: %s
+ID: <code>%s</code>
+区域: %s
+原因: 该可用区资源已售罄 (NoStock)
+尝试: %d 次
+时间: %s
+━━━━━━━━━━━━━━━
+⚠️ <i>自动重启已暂停，直到资源恢复可用</i>
+💡 <i>可尝试更换实例规格或可用区</i>`,
+		instanceName, instanceID, region, attempts, time.Now().Format("2006-01-02 15:04:05"))
+
+	return t.Send(message)
+}
+
 // NotifyHealthCheckTimeout sends a notification when health check times out
 func (t *TelegramNotifier) NotifyHealthCheckTimeout(instanceID, instanceName, region, publicIP string, timeout int) error {
 	ipInfo := "无公网IP"

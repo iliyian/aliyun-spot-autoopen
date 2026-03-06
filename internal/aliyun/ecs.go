@@ -333,3 +333,13 @@ func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
 
 	return allInstances, nil
 }
+
+// IsNoStockError checks if the error is a NoStock error (resource sold out)
+func IsNoStockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "OperationDenied.NoStock") ||
+		strings.Contains(errMsg, "is sold out in the specified zone")
+}

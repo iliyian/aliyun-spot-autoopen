@@ -33,6 +33,10 @@ type Monitor struct {
 	lastNotify   map[string]time.Time
 	lastNotifyMu sync.RWMutex
 
+	// NoStock tracking - instances that cannot start due to resource sold out
+	noStockInstances   map[string]bool
+	noStockInstancesMu sync.RWMutex
+
 	// Traffic shutdown tracking (independent for China/non-China)
 	chinaShutdown     bool
 	nonChinaShutdown  bool
@@ -42,8 +46,9 @@ type Monitor struct {
 // New creates a new monitor
 func New(cfg *config.Config) (*Monitor, error) {
 	m := &Monitor{
-		cfg:        cfg,
-		lastNotify: make(map[string]time.Time),
+		cfg:              cfg,
+		lastNotify:       make(map[string]time.Time),
+		noStockInstances: make(map[string]bool),
 	}
 
 	// Initialize Aliyun ECS client (optional when GCP-only)
@@ -405,8 +410,30 @@ func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
 
 	log.Debugf("Instance %s (%s) status: %s", inst.InstanceName, inst.InstanceID, status)
 
+	// If instance is running, clear NoStock flag if it was set
+	if status == "Running" {
+		m.noStockInstancesMu.Lock()
+		if m.noStockInstances[inst.InstanceID] {
+			log.Infof("Instance %s (%s) is running, clearing NoStock flag", inst.InstanceName, inst.InstanceID)
+			delete(m.noStockInstances, inst.InstanceID)
+		}
+		m.noStockInstancesMu.Unlock()
+		return nil
+	}
+
 	// Only handle stopped instances
 	if status != "Stopped" {
+		return nil
+	}
+
+	// Check if this instance is blocked by NoStock
+	m.noStockInstancesMu.RLock()
+	noStock := m.noStockInstances[inst.InstanceID]
+	m.noStockInstancesMu.RUnlock()
+
+	if noStock {
+		log.Debugf("Instance %s (%s) skipped: resource sold out (NoStock), waiting for availability",
+			inst.InstanceName, inst.InstanceID)
 		return nil
 	}
 
@@ -428,7 +455,10 @@ func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
 	// Try to start the instance with retries
 	startTime := time.Now()
 	var lastErr error
+	noStockDetected := false
+	attemptCount := 0
 	for i := 0; i < m.cfg.RetryCount; i++ {
+		attemptCount = i + 1
 		if i > 0 {
 			log.Infof("Retry %d/%d for instance %s", i+1, m.cfg.RetryCount, inst.InstanceID)
 			time.Sleep(time.Duration(m.cfg.RetryInterval) * time.Second)
@@ -437,6 +467,14 @@ func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
 		if err := m.ecsClient.StartInstance(inst.RegionID, inst.InstanceID); err != nil {
 			lastErr = err
 			log.Warnf("Failed to start instance %s (attempt %d): %v", inst.InstanceID, i+1, err)
+
+			// Check if it's a NoStock error - stop retrying immediately
+			if aliyun.IsNoStockError(err) {
+				log.Warnf("Instance %s: resource sold out (NoStock), stopping retries", inst.InstanceID)
+				noStockDetected = true
+				break
+			}
+
 			continue
 		}
 
@@ -470,7 +508,23 @@ func (m *Monitor) checkInstance(inst *aliyun.SpotInstance) error {
 		return nil
 	}
 
-	// All retries failed
+	// Handle NoStock: set flag and send specific notification, stop auto-restart
+	if noStockDetected {
+		m.noStockInstancesMu.Lock()
+		m.noStockInstances[inst.InstanceID] = true
+		m.noStockInstancesMu.Unlock()
+
+		log.Errorf("Instance %s marked as NoStock, auto-restart paused", inst.InstanceID)
+		if m.notifier != nil {
+			if err := m.notifier.NotifyInstanceNoStock(inst.InstanceID, inst.InstanceName, inst.RegionID, attemptCount); err != nil {
+				log.Warnf("Failed to send NoStock notification: %v", err)
+			}
+		}
+
+		return lastErr
+	}
+
+	// All retries failed (non-NoStock errors)
 	log.Errorf("Failed to start instance %s after %d retries", inst.InstanceID, m.cfg.RetryCount)
 	if m.notifier != nil {
 		if err := m.notifier.NotifyInstanceStartFailed(inst.InstanceID, inst.InstanceName, inst.RegionID, m.cfg.RetryCount, lastErr); err != nil {
