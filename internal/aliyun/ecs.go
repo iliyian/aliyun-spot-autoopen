@@ -20,6 +20,7 @@ type SpotInstance struct {
 	PublicIPAddress  string
 	PrivateIPAddress string
 	SpotStrategy     string
+	AccountLabel     string // label of the Aliyun account that owns this instance
 }
 
 // ECSClient wraps the Aliyun ECS client
@@ -92,7 +93,7 @@ func (c *ECSClient) GetAllRegions() ([]string, error) {
 }
 
 // GetSpotInstances returns all spot instances in the specified region
-func (c *ECSClient) GetSpotInstances(regionID string) ([]*SpotInstance, error) {
+func (c *ECSClient) GetSpotInstances(regionID string, accountLabel string) ([]*SpotInstance, error) {
 	client, err := c.getClient(regionID)
 	if err != nil {
 		return nil, err
@@ -142,6 +143,7 @@ func (c *ECSClient) GetSpotInstances(regionID string) ([]*SpotInstance, error) {
 					PublicIPAddress:  publicIP,
 					PrivateIPAddress: privateIP,
 					SpotStrategy:     inst.SpotStrategy,
+					AccountLabel:     accountLabel,
 				})
 			}
 		}
@@ -181,7 +183,7 @@ func (c *ECSClient) GetInstanceStatus(regionID, instanceID string) (string, erro
 }
 
 // GetInstance returns detailed information about an instance
-func (c *ECSClient) GetInstance(regionID, instanceID string) (*SpotInstance, error) {
+func (c *ECSClient) GetInstance(regionID, instanceID string, accountLabel string) (*SpotInstance, error) {
 	client, err := c.getClient(regionID)
 	if err != nil {
 		return nil, err
@@ -224,6 +226,7 @@ func (c *ECSClient) GetInstance(regionID, instanceID string) (*SpotInstance, err
 		PublicIPAddress:  publicIP,
 		PrivateIPAddress: privateIP,
 		SpotStrategy:     inst.SpotStrategy,
+		AccountLabel:     accountLabel,
 	}, nil
 }
 
@@ -278,13 +281,13 @@ func (c *ECSClient) StopInstance(regionID, instanceID, stoppedMode string) error
 }
 
 // DiscoverAllSpotInstances discovers all spot instances across all regions
-func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
-	log.Info("Fetching all regions...")
+func (c *ECSClient) DiscoverAllSpotInstances(accountLabel string) ([]*SpotInstance, error) {
+	log.Infof("[%s] Fetching all regions...", accountLabel)
 	regions, err := c.GetAllRegions()
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("Found %d regions, scanning for spot instances...", len(regions))
+	log.Infof("[%s] Found %d regions, scanning for spot instances...", accountLabel, len(regions))
 
 	// Use concurrent scanning for faster discovery
 	var (
@@ -305,7 +308,7 @@ func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
 			semaphore <- struct{}{}        // Acquire
 			defer func() { <-semaphore }() // Release
 
-			instances, err := c.GetSpotInstances(regionID)
+			instances, err := c.GetSpotInstances(regionID, accountLabel)
 
 			scannedMu.Lock()
 			scannedCount++
@@ -313,7 +316,7 @@ func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
 			scannedMu.Unlock()
 
 			if err != nil {
-				log.Debugf("[%d/%d] Region %s: error - %v", progress, len(regions), regionID, err)
+				log.Debugf("[%s] [%d/%d] Region %s: error - %v", accountLabel, progress, len(regions), regionID, err)
 				return
 			}
 
@@ -321,15 +324,15 @@ func (c *ECSClient) DiscoverAllSpotInstances() ([]*SpotInstance, error) {
 				mu.Lock()
 				allInstances = append(allInstances, instances...)
 				mu.Unlock()
-				log.Infof("[%d/%d] Region %s: found %d spot instance(s)", progress, len(regions), regionID, len(instances))
+				log.Infof("[%s] [%d/%d] Region %s: found %d spot instance(s)", accountLabel, progress, len(regions), regionID, len(instances))
 			} else {
-				log.Debugf("[%d/%d] Region %s: no spot instances", progress, len(regions), regionID)
+				log.Debugf("[%s] [%d/%d] Region %s: no spot instances", accountLabel, progress, len(regions), regionID)
 			}
 		}(region)
 	}
 
 	wg.Wait()
-	log.Infof("Scan completed in %.1f seconds", time.Since(startTime).Seconds())
+	log.Infof("[%s] Scan completed in %.1f seconds", accountLabel, time.Since(startTime).Seconds())
 
 	return allInstances, nil
 }

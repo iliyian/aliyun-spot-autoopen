@@ -5,13 +5,21 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// AliyunAccount represents a single Aliyun account with credentials and label
+type AliyunAccount struct {
+	Label           string // display label for this account
+	AccessKeyID     string
+	AccessKeySecret string
+}
 
 // Config holds all configuration for the application
 type Config struct {
-	// Aliyun credentials
-	AliyunAccessKeyID     string
-	AliyunAccessKeySecret string
+	// Aliyun credentials (multi-account)
+	AliyunAccounts []AliyunAccount
 
 	// GCP settings
 	GCPEnabled         bool
@@ -54,10 +62,6 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	cfg := &Config{
-		// Aliyun
-		AliyunAccessKeyID:     os.Getenv("ALIYUN_ACCESS_KEY_ID"),
-		AliyunAccessKeySecret: os.Getenv("ALIYUN_ACCESS_KEY_SECRET"),
-
 		// GCP
 		GCPEnabled:         getEnvBool("GCP_ENABLED", false),
 		GCPProjectID:       os.Getenv("GCP_PROJECT_ID"),
@@ -107,13 +111,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Parse Aliyun accounts (comma-separated, one-to-one correspondence)
+	cfg.AliyunAccounts = parseAliyunAccounts()
+
 	// Validate required fields - Aliyun is optional when GCP is enabled
 	if !cfg.GCPEnabled {
-		if cfg.AliyunAccessKeyID == "" {
-			return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_ID is required")
-		}
-		if cfg.AliyunAccessKeySecret == "" {
-			return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_SECRET is required")
+		if len(cfg.AliyunAccounts) == 0 {
+			return nil, fmt.Errorf("ALIYUN_ACCESS_KEY_ID and ALIYUN_ACCESS_KEY_SECRET are required (support comma-separated multiple accounts)")
 		}
 	} else {
 		if cfg.GCPProjectID == "" {
@@ -131,6 +135,68 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseAliyunAccounts parses comma-separated Aliyun credentials into account list.
+// ALIYUN_ACCESS_KEY_ID=id1,id2,id3
+// ALIYUN_ACCESS_KEY_SECRET=secret1,secret2,secret3
+// ALIYUN_ACCOUNT_LABELS=标签1,标签2,标签3  (optional, defaults to "账号1", "账号2", ...)
+func parseAliyunAccounts() []AliyunAccount {
+	keyIDStr := strings.TrimSpace(os.Getenv("ALIYUN_ACCESS_KEY_ID"))
+	keySecretStr := strings.TrimSpace(os.Getenv("ALIYUN_ACCESS_KEY_SECRET"))
+	labelsStr := strings.TrimSpace(os.Getenv("ALIYUN_ACCOUNT_LABELS"))
+
+	if keyIDStr == "" || keySecretStr == "" {
+		return nil
+	}
+
+	keyIDs := splitAndTrim(keyIDStr, ",")
+	keySecrets := splitAndTrim(keySecretStr, ",")
+
+	// Must have same count
+	if len(keyIDs) != len(keySecrets) {
+		log.Errorf("ALIYUN_ACCESS_KEY_ID count (%d) does not match ALIYUN_ACCESS_KEY_SECRET count (%d), skipping Aliyun accounts",
+			len(keyIDs), len(keySecrets))
+		return nil
+	}
+
+	// Parse labels
+	var labels []string
+	if labelsStr != "" {
+		labels = splitAndTrim(labelsStr, ",")
+	}
+
+	accounts := make([]AliyunAccount, 0, len(keyIDs))
+	for i := 0; i < len(keyIDs); i++ {
+		if keyIDs[i] == "" || keySecrets[i] == "" {
+			continue
+		}
+		label := fmt.Sprintf("账号%d", i+1)
+		if i < len(labels) && labels[i] != "" {
+			label = labels[i]
+		}
+		// When there's only one account, use empty label (no need to distinguish)
+		if len(keyIDs) == 1 {
+			label = ""
+		}
+		accounts = append(accounts, AliyunAccount{
+			Label:           label,
+			AccessKeyID:     keyIDs[i],
+			AccessKeySecret: keySecrets[i],
+		})
+	}
+
+	return accounts
+}
+
+// splitAndTrim splits a string by separator and trims whitespace from each part
+func splitAndTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	result := make([]string, len(parts))
+	for i, p := range parts {
+		result[i] = strings.TrimSpace(p)
+	}
+	return result
 }
 
 func getEnvString(key, defaultValue string) string {

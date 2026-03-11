@@ -27,6 +27,7 @@ type InstanceBillingSummary struct {
 	InstanceID   string
 	InstanceName string
 	Region       string
+	AccountLabel string
 	InstanceSpec string  // 实例规格
 	Items        []BillingItem
 	TotalAmount  float64
@@ -39,6 +40,7 @@ type BillingSummary struct {
 	StartTime           time.Time
 	EndTime             time.Time
 	BillingCycle        string  // 账单周期 (YYYY-MM)
+	AccountLabel        string  // 账号标签
 	ElapsedDays         int     // 本月已过天数
 	TotalRunningHours   float64 // 总运行小时数
 	Instances           []InstanceBillingSummary
@@ -75,13 +77,13 @@ type InstanceInfo struct {
 // QueryBilling queries billing for the specified instances for the current month
 // Note: Aliyun API returns monthly cumulative data, so we query the current month's data
 // and calculate monthly estimate based on actual running time (ServicePeriod in seconds)
-func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary, error) {
+func (c *BillingClient) QueryBilling(instances []InstanceInfo, accountLabel string) (*BillingSummary, error) {
 	now := time.Now()
 	// Start of current month
 	startTime := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 
-	log.Debugf("Querying billing for %d instances, current month %s",
-		len(instances), now.Format("2006-01"))
+	log.Debugf("[%s] Querying billing for %d instances, current month %s",
+		accountLabel, len(instances), now.Format("2006-01"))
 
 	// Create instance ID to info map for quick lookup
 	instanceMap := make(map[string]InstanceInfo)
@@ -99,7 +101,7 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 	// Each instance has multiple billing items with the same ServicePeriod
 	instanceRunningSeconds := make(map[string]float64)
 
-	log.Debugf("Querying billing cycle: %s", cycle)
+	log.Debugf("[%s] Querying billing cycle: %s", accountLabel, cycle)
 
 	// Query instance bill
 	request := bssopenapi.CreateQueryInstanceBillRequest()
@@ -115,7 +117,7 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 		return nil, fmt.Errorf("failed to query instance bill for cycle %s: %w", cycle, err)
 	}
 
-	log.Debugf("Got %d billing items from API for cycle %s", len(response.Data.Items.Item), cycle)
+	log.Debugf("[%s] Got %d billing items from API for cycle %s", accountLabel, len(response.Data.Items.Item), cycle)
 
 	for _, item := range response.Data.Items.Item {
 		// Skip if not in our instance list
@@ -125,8 +127,8 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 		}
 
 		// Debug log to see actual API response fields
-		log.Debugf("Billing item: InstanceID=%s, InstanceSpec=%s, BillingItem=%s, ServicePeriod=%s, PretaxAmount=%.4f",
-			item.InstanceID, item.InstanceSpec, item.BillingItem, item.ServicePeriod, item.PretaxAmount)
+		log.Debugf("[%s] Billing item: InstanceID=%s, InstanceSpec=%s, BillingItem=%s, ServicePeriod=%s, PretaxAmount=%.4f",
+			accountLabel, item.InstanceID, item.InstanceSpec, item.BillingItem, item.ServicePeriod, item.PretaxAmount)
 
 		summary, exists := instanceBillings[item.InstanceID]
 		if !exists {
@@ -134,6 +136,7 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 				InstanceID:   item.InstanceID,
 				InstanceName: instInfo.InstanceName,
 				Region:       instInfo.RegionID,
+				AccountLabel: accountLabel,
 				InstanceSpec: item.InstanceSpec,
 				Items:        []BillingItem{},
 				TotalAmount:  0,
@@ -193,6 +196,7 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 		StartTime:         startTime,
 		EndTime:           now,
 		BillingCycle:      cycle,
+		AccountLabel:      accountLabel,
 		ElapsedDays:       elapsedDays,
 		TotalRunningHours: totalRunningHours,
 		Instances:         make([]InstanceBillingSummary, 0, len(instanceBillings)),
@@ -233,8 +237,8 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 		}
 	}
 
-	log.Infof("Found billing for %d instances, total: %.4f, running hours: %.2f, monthly estimate: %.2f",
-		len(result.Instances), result.TotalAmount, totalRunningHours, result.MonthlyEstimate)
+	log.Infof("[%s] Found billing for %d instances, total: %.4f, running hours: %.2f, monthly estimate: %.2f",
+		accountLabel, len(result.Instances), result.TotalAmount, totalRunningHours, result.MonthlyEstimate)
 
 	return result, nil
 }
@@ -242,7 +246,7 @@ func (c *BillingClient) QueryBilling(instances []InstanceInfo) (*BillingSummary,
 // QueryBillingByHours is deprecated, use QueryBilling instead
 // Kept for backward compatibility
 func (c *BillingClient) QueryBillingByHours(instances []InstanceInfo, hours int) (*BillingSummary, error) {
-	return c.QueryBilling(instances)
+	return c.QueryBilling(instances, "")
 }
 
 // parseServicePeriod parses ServicePeriod string and converts to seconds based on unit

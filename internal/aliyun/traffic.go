@@ -57,6 +57,7 @@ type TrafficSummary struct {
 	StartTime          time.Time
 	EndTime            time.Time
 	BillingCycle       string // YYYY-MM
+	AccountLabel       string // 账号标签
 	ChinaMainland      TrafficRegionSummary
 	NonChinaMainland   TrafficRegionSummary
 	TotalTraffic       int64
@@ -113,16 +114,16 @@ func IsChinaMainlandRegion(regionId string) bool {
 }
 
 // QueryInternetTraffic queries internet traffic for the current month
-func (c *TrafficClient) QueryInternetTraffic() (*TrafficSummary, error) {
+func (c *TrafficClient) QueryInternetTraffic(accountLabel string) (*TrafficSummary, error) {
 	now := time.Now()
 	startTime := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	endTime := now
 
-	return c.QueryInternetTrafficByTimeRange(startTime, endTime)
+	return c.QueryInternetTrafficByTimeRange(startTime, endTime, accountLabel)
 }
 
 // QueryInternetTrafficByTimeRange queries internet traffic for a specific time range
-func (c *TrafficClient) QueryInternetTrafficByTimeRange(startTime, endTime time.Time) (*TrafficSummary, error) {
+func (c *TrafficClient) QueryInternetTrafficByTimeRange(startTime, endTime time.Time, accountLabel string) (*TrafficSummary, error) {
 	request := requests.NewCommonRequest()
 	request.Method = "POST"
 	request.Scheme = "https"
@@ -133,7 +134,7 @@ func (c *TrafficClient) QueryInternetTrafficByTimeRange(startTime, endTime time.
 	request.QueryParams["StartTime"] = startTime.Format("2006-01-02T15:04:05Z")
 	request.QueryParams["EndTime"] = endTime.Format("2006-01-02T15:04:05Z")
 
-	log.Debugf("Querying CDT traffic from %s to %s", startTime.Format("2006-01-02"), endTime.Format("2006-01-02"))
+	log.Debugf("[%s] Querying CDT traffic from %s to %s", accountLabel, startTime.Format("2006-01-02"), endTime.Format("2006-01-02"))
 
 	response, err := c.client.ProcessCommonRequest(request)
 	if err != nil {
@@ -154,7 +155,9 @@ func (c *TrafficClient) QueryInternetTrafficByTimeRange(startTime, endTime time.
 		StartTime:     startTime,
 		EndTime:       endTime,
 		BillingCycle:  startTime.Format("2006-01"),
-		RegionDetails: cdtResponse.TrafficDetails,ChinaMainland: TrafficRegionSummary{
+		AccountLabel:  accountLabel,
+		RegionDetails: cdtResponse.TrafficDetails,
+		ChinaMainland: TrafficRegionSummary{
 			ProductDetails: make(map[string]int64),
 		},
 		NonChinaMainland: TrafficRegionSummary{
@@ -188,7 +191,8 @@ func (c *TrafficClient) QueryInternetTrafficByTimeRange(startTime, endTime time.
 	summary.ChinaMainland.TrafficGB = float64(summary.ChinaMainland.Traffic) / (1024 * 1024 * 1024)
 	summary.NonChinaMainland.TrafficGB = float64(summary.NonChinaMainland.Traffic) / (1024 * 1024 * 1024)
 
-	log.Infof("Traffic summary: Total=%.2f GB, China Mainland=%.2f GB (%d regions), Non-China=%.2f GB (%d regions)",
+	log.Infof("[%s] Traffic summary: Total=%.2f GB, China Mainland=%.2f GB (%d regions), Non-China=%.2f GB (%d regions)",
+		accountLabel,
 		summary.TotalTrafficGB,
 		summary.ChinaMainland.TrafficGB, summary.ChinaMainland.RegionCount,
 		summary.NonChinaMainland.TrafficGB, summary.NonChinaMainland.RegionCount)

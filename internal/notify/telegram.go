@@ -192,19 +192,31 @@ func (t *TelegramNotifier) NotifyMonitorStarted(instanceCount int, instances []s
 // NotifyBillingSummary sends a billing summary notification with monthly data and estimate
 func (t *TelegramNotifier) NotifyBillingSummary(summary *aliyun.BillingSummary) error {
 	if summary == nil || len(summary.Instances) == 0 {
-		message := fmt.Sprintf(`📊 <b>扣费汇总</b> (%s)
+		accountTitle := ""
+		if summary != nil && summary.AccountLabel != "" {
+			accountTitle = fmt.Sprintf(" [%s]", summary.AccountLabel)
+		}
+		billingCycle := "未知周期"
+		if summary != nil {
+			billingCycle = summary.BillingCycle
+		}
+		message := fmt.Sprintf(`📊 <b>扣费汇总%s</b> (%s)
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 暂无扣费记录
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 💰 本月累计: ¥0.00
-📈 月度估算: ¥0.00`, summary.BillingCycle)
+📈 月度估算: ¥0.00`, accountTitle, billingCycle)
 		return t.Send(message)
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 <b>扣费汇总</b> (%s)\n", summary.BillingCycle))
+	accountTitle := ""
+	if summary.AccountLabel != "" {
+		accountTitle = fmt.Sprintf(" [%s]", summary.AccountLabel)
+	}
+	sb.WriteString(fmt.Sprintf("📊 <b>扣费汇总%s</b> (%s)\n", accountTitle, summary.BillingCycle))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	// Statistics section
@@ -266,7 +278,11 @@ func (t *TelegramNotifier) NotifyTrafficSummary(summary *aliyun.TrafficSummary) 
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📶 <b>流量统计</b> (%s)\n", summary.BillingCycle))
+	accountTitle := ""
+	if summary.AccountLabel != "" {
+		accountTitle = fmt.Sprintf(" [%s]", summary.AccountLabel)
+	}
+	sb.WriteString(fmt.Sprintf("📶 <b>流量统计%s</b> (%s)\n", accountTitle, summary.BillingCycle))
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
 
 	// Statistics section
@@ -345,14 +361,18 @@ func (t *TelegramNotifier) NotifyTrafficSummary(summary *aliyun.TrafficSummary) 
 }
 
 // NotifyTrafficShutdown sends a notification when instances are stopped due to traffic limit
-func (t *TelegramNotifier) NotifyTrafficShutdown(region string, trafficGB, limitGB float64, stoppedInstances []string) error {
+func (t *TelegramNotifier) NotifyTrafficShutdown(accountLabel, region string, trafficGB, limitGB float64, stoppedInstances []string) error {
 	regionLabel := "🇨🇳 中国大陆"
 	if region == "non-china" {
 		regionLabel = "🌏 非中国大陆"
 	}
 
 	var sb strings.Builder
-	sb.WriteString("🚨 <b>流量超额自动关机</b>\n")
+	accountTitle := ""
+	if accountLabel != "" {
+		accountTitle = fmt.Sprintf(" [%s]", accountLabel)
+	}
+	sb.WriteString(fmt.Sprintf("🚨 <b>流量超额自动关机%s</b>\n", accountTitle))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 	sb.WriteString(fmt.Sprintf("📍 区域: %s\n", regionLabel))
 	sb.WriteString(fmt.Sprintf("📊 当前流量: <b>%.2f GB</b>\n", trafficGB))
@@ -387,7 +407,11 @@ func (t *TelegramNotifier) NotifyTrafficSummaryWithLimits(summary *aliyun.Traffi
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📶 <b>流量统计</b> (%s)\n", summary.BillingCycle))
+	accountTitle := ""
+	if summary.AccountLabel != "" {
+		accountTitle = fmt.Sprintf(" [%s]", summary.AccountLabel)
+	}
+	sb.WriteString(fmt.Sprintf("📶 <b>流量统计%s</b> (%s)\n", accountTitle, summary.BillingCycle))
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
 
 	// Statistics section
