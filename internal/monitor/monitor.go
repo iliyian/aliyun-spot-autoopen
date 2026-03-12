@@ -133,9 +133,21 @@ func (m *Monitor) getCBWPClientByLabel(label string) *aliyun.CBWPClient {
 	return nil
 }
 
-// StartBot starts the Telegram bot polling
+// StartBot starts the Telegram bot polling and registers commands
 func (m *Monitor) StartBot() {
 	if m.botHandler != nil {
+		// Register bot commands with Telegram (same functionality only registers one command)
+		commands := []notify.BotCommand{
+			{Command: "status", Description: "查看实例状态"},
+			{Command: "billing", Description: "查询本月扣费汇总"},
+			{Command: "traffic", Description: "查询本月流量统计"},
+			{Command: "cbwp", Description: "管理共享带宽包"},
+			{Command: "help", Description: "显示帮助信息"},
+		}
+		if err := m.botHandler.SetMyCommands(commands); err != nil {
+			log.Warnf("Failed to register bot commands: %v", err)
+		}
+
 		m.botHandler.StartPolling()
 	}
 }

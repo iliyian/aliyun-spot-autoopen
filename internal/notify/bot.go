@@ -81,6 +81,12 @@ type TelegramCallback struct {
 	Data    string           `json:"data"`
 }
 
+// BotCommand represents a Telegram bot command for setMyCommands API
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 // InlineKeyboardButton represents an inline keyboard button
 type InlineKeyboardButton struct {
 	Text         string `json:"text"`
@@ -281,6 +287,35 @@ func (b *BotHandler) PollUpdates() error {
 		}
 	}
 
+	return nil
+}
+
+// SetMyCommands registers bot commands with Telegram so they appear in the command menu
+func (b *BotHandler) SetMyCommands(commands []BotCommand) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", b.botToken)
+
+	payload := struct {
+		Commands []BotCommand `json:"commands"`
+	}{
+		Commands: commands,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal commands: %w", err)
+	}
+
+	resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to set commands: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("telegram API returned status %d", resp.StatusCode)
+	}
+
+	log.Infof("Successfully registered %d bot commands with Telegram", len(commands))
 	return nil
 }
 
